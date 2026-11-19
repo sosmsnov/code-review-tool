@@ -92,6 +92,9 @@ const conclusion = {
   conclusion: 'One real defect the review missed.',
 };
 
+// What the fake reviewer answers to the conclusion prompt; a test may swap it.
+let conclusionAnswer = JSON.stringify(conclusion);
+
 const reviewerScript = `
 printf '%s' "$1" > "$PROMPT_DIR/$$.txt"
 case "$1" in
@@ -111,7 +114,7 @@ const fakeReviewer: ReviewerDefinition = {
     PATH: process.env.PATH,
     PROMPT_DIR: prompts,
     SYNTH_JSON: JSON.stringify(synthesis),
-    CONCLUSION_JSON: JSON.stringify(conclusion),
+    CONCLUSION_JSON: conclusionAnswer,
   }),
   parseStreamLine: (line) => ({ result: line }),
   discoverModels: async () => ({ models: [], source: null, fetchedAt: Date.now(), hint: null }),
@@ -272,6 +275,55 @@ test('a failing provider leaves the primary result and records the failure', asy
   assert.equal(state.primary_verdict, 'approve');
   assert.ok(logs.some((l) => l.startsWith('second opinion ocr: failed (') && l.includes('exited with code 2')));
   assert.equal(sentPrompts().filter((p) => p.includes('Your job: conclusion')).length, 0);
+});
+
+test('a conclusion pass that never answers usably fails the stage and leaves the primary result', async () => {
+  setMode('ok');
+  conclusionAnswer = 'I looked at the comments and they seem fine.';
+  try {
+    const logs: string[] = [];
+    const out = await runReview(review, checkout, null, (_l, m) => logs.push(m), { ...baseOpts, secondOpinion: request([]) });
+    const state = out.second_opinion!;
+    assert.equal(state.status, 'failed');
+    assert.match(state.error!, /conclusion: the model did not return a valid JSON block/);
+    assert.equal(state.comments_total, 3);
+    assert.ok(state.comments.every((c) => c.assessment === null));
+    assert.equal(out.verdict, 'approve');
+    assert.equal(out.can_merge, true);
+    assert.deepEqual(out.findings.map((f) => f.title), ['Primary finding']);
+    assert.ok(out.findings.every((f) => f.corroborated === undefined));
+    assert.ok(out.observations.every((o) => o.lens !== 'second_opinion'));
+    // The first answer and the corrective retry.
+    assert.equal(sentPrompts().filter((p) => p.includes('Your job: conclusion')).length, 2);
+    assert.ok(logs.some((l) => l.startsWith('conclusion: failed (conclusion: the model did not return a valid JSON block')));
+    assert.deepEqual(liveReviewerGroups(), []);
+  } finally {
+    conclusionAnswer = JSON.stringify(conclusion);
+  }
+});
+
+test('a provider that runs past its timeout is killed and the primary result stands', async () => {
+  setMode('hang');
+  const logs: string[] = [];
+  const groups: RecordedGroup[][] = [];
+  const out = await runReview(review, checkout, null, (_l, m) => logs.push(m), {
+    ...baseOpts, onProcessGroups: (g) => groups.push(g), secondOpinion: request([], { timeoutMs: 1_500 }),
+  });
+  const state = out.second_opinion!;
+  assert.equal(state.status, 'failed');
+  assert.equal(state.error, `${fakeOcr} timed out after 2s`);
+  assert.equal(out.verdict, 'approve');
+  assert.deepEqual(out.findings.map((f) => f.title), ['Primary finding']);
+  assert.ok(out.findings.every((f) => f.corroborated === undefined));
+  assert.ok(logs.some((l) => l.startsWith('second opinion ocr: failed (') && l.includes('timed out')));
+  assert.equal(sentPrompts().filter((p) => p.includes('Your job: conclusion')).length, 0);
+  const pgid = groups.flat().find((g) => g.bin === 'fake-ocr')!.pgid;
+  const gone = Date.now() + 3_000;
+  while (isGroupAlive(pgid) && Date.now() < gone) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(isGroupAlive(pgid), false);
+  assert.deepEqual(liveReviewerGroups(), []);
+  // The provider got a shorter budget of its own, at least one minute.
+  assert.ok(fs.readFileSync(argsFile, 'utf8').includes('--timeout\n1\n'));
 });
 
 test('a provider with no comments ends the stage without a conclusion process', async () => {

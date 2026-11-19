@@ -7,6 +7,8 @@ import {
   chooseModel, getReviewer, listReviewersWithModels, notInstalledMessage, REVIEWER_NAMES,
 } from './reviewers/index.js';
 import { resolveTargets } from './resolver.js';
+import { getSecondOpinionProvider, resolveSecondOpinion, secondOpinionNotInstalled } from './secondOpinion/index.js';
+import { pendingState } from './secondOpinion/state.js';
 import type { ResolvedTarget, TicketInfo } from './types.js';
 
 const HELP = `code-review-tool — run a read-only code review from the terminal.
@@ -153,6 +155,16 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  // SECOND_OPINION applies here as on the server; an uninstalled default is left out, with the run log's warning.
+  let secondOpinion = resolveSecondOpinion(undefined);
+  if (secondOpinion) {
+    const provider = getSecondOpinionProvider(secondOpinion);
+    if (!provider.isAvailable()) {
+      console.warn(`second opinion ${secondOpinion}: skipped (${secondOpinionNotInstalled(provider)})`);
+      secondOpinion = null;
+    }
+  }
+
   stopOnSignals();
 
   // The server may be running reviews in the same database right now. Only
@@ -206,6 +218,7 @@ async function main(): Promise<number> {
       base_reason: target.source === 'local' ? target.baseReason ?? null : null,
       reviewer: reviewer.name,
       model,
+      second_opinion: secondOpinion ? JSON.stringify(pendingState(secondOpinion)) : null,
     });
     ids.push(review.id);
     enqueueReview(review.id);

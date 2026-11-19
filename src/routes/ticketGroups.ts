@@ -26,7 +26,7 @@ import {
 } from '../ticketRequirements.js';
 import { resolveSecondOpinion, type SecondOpinionName } from '../secondOpinion/index.js';
 import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
-import { startRun } from './reviews.js';
+import { reviewJson, startRun } from './reviews.js';
 
 export interface TicketRouteDeps {
   resolve: typeof resolveTargets;
@@ -355,7 +355,7 @@ export async function ticketGroupRoutes(app: FastifyInstance, opts: { deps?: Par
     const run = createTicketRun(key, reviews.map((r) => r.id));
     return reply.code(201).send({
       run: runPayload(run),
-      reviews,
+      reviews: reviews.map((r) => reviewJson(r)),
       notes,
       ...(resolveError ? { resolve_warning: `The tracker lookup failed, so the stored branches were used: ${resolveError}` } : {}),
       ...ticketPayload(key, deps.pending),

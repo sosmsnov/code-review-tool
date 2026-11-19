@@ -49,7 +49,9 @@ const resolved: ResolvedTarget[] = [B, A].flatMap((branch) => (['web', 'svc'] as
   repo, branch, baseBranch: 'main', prNumber: null,
 })));
 
-const started: { target: ResolvedTarget; ticket: TicketInfo | null; reviewer?: string; model?: string }[] = [];
+const started: {
+  target: ResolvedTarget; ticket: TicketInfo | null; reviewer?: string; model?: string; secondOpinion?: string | null;
+}[] = [];
 const recomputed: { key: string; opts: unknown }[] = [];
 let resolveFails = false;
 
@@ -66,7 +68,7 @@ const deps: Partial<TicketRouteDeps> = {
     localParent: async () => { throw new Error('not local'); },
   },
   startRun: (target, t, reviewer, model, opts) => {
-    started.push({ target, ticket: t, reviewer, model });
+    started.push({ target, ticket: t, reviewer, model, secondOpinion: opts?.secondOpinion });
     return store.createReview({
       depends_on: opts?.dependsOn ?? null,
       ticket_key: t?.key || null, ticket_title: t?.title ?? null, ticket_body: t?.body ?? null,
@@ -323,6 +325,33 @@ test('without a model the resolved default is queued; a pass by hand gets a chec
     assert.deepEqual(recomputed.at(-1)!.opts, { trigger: 'manual', reviewer: 'codex', model: 'gpt-5.6-sol' });
   } finally {
     setReviewerForTests('codex', null);
+  }
+});
+
+test('the batch passes the second opinion to every branch review; a missing provider is refused', async () => {
+  const { setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
+  const { createOcrProvider } = await import('./secondOpinion/ocr.js');
+  setSecondOpinionProviderForTests('ocr', { ...createOcrProvider('/nonexistent/ocr'), isAvailable: () => true });
+  try {
+    let from = started.length;
+    const res = await app.inject({ method: 'POST', url: '/api/tickets/ABC-3/review', payload: { secondOpinion: 'ocr', refresh: false } });
+    assert.equal(res.statusCode, 201, res.body);
+    assert.ok(started.length - from > 1);
+    assert.deepEqual(new Set(started.slice(from).map((s) => s.secondOpinion)), new Set(['ocr']));
+
+    from = started.length;
+    const off = await app.inject({ method: 'POST', url: '/api/tickets/ABC-3/review', payload: { refresh: false } });
+    assert.equal(off.statusCode, 201, off.body);
+    assert.deepEqual(new Set(started.slice(from).map((s) => s.secondOpinion)), new Set([null]));
+
+    setSecondOpinionProviderForTests('ocr', { ...createOcrProvider('/nonexistent/ocr'), isAvailable: () => false });
+    from = started.length;
+    const missing = await app.inject({ method: 'POST', url: '/api/tickets/ABC-3/review', payload: { secondOpinion: 'ocr', refresh: false } });
+    assert.equal(missing.statusCode, 400);
+    assert.match(missing.json().error, /not installed/);
+    assert.equal(started.length, from);
+  } finally {
+    setSecondOpinionProviderForTests('ocr', null);
   }
 });
 

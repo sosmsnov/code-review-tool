@@ -1036,7 +1036,8 @@ export function spawnTracked(opts: TrackedSpawnOptions): Promise<TrackedExit> {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
       stderrTail = (stderrTail + chunk).slice(-4000);
-      if (opts.onStderrLine) stderrBuf = drain(stderrBuf + chunk, opts.onStderrLine);
+      // A line without a newline is capped like the tail, so a chatty process cannot grow it without bound.
+      if (opts.onStderrLine) stderrBuf = drain(stderrBuf + chunk, opts.onStderrLine).slice(-4000);
     });
 
     child.on('error', (err) => finish(new Error(`Failed to start ${bin}: ${err.message}`)));

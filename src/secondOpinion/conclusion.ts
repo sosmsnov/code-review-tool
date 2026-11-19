@@ -58,11 +58,19 @@ export interface ConclusionAnswer {
   conclusion: string;
 }
 
-const optionalInt = z.union([z.number(), z.string()]).nullish()
-  .transform((v) => {
-    const n = typeof v === 'string' ? Number(v.replace(/[^\d]/g, '')) : v;
-    return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null;
-  });
+/**
+ * A finding number: `3`, `"3"`, `"#3"` or `"F3"`. Anything else (`"#1, #4"`,
+ * `1.5`) is null, so a duplicate without a usable number gets the retry.
+ */
+export function parseFindingNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isInteger(value) && value > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const match = /^\s*[#Ff]?\s*(\d+)\s*$/.exec(value);
+  const n = match ? Number(match[1]) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+const optionalInt = z.unknown().optional().transform(parseFindingNumber);
 
 /**
  * The conclusion pass's answer. Lenient where the model is sloppy (verdict

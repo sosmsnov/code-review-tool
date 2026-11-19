@@ -135,6 +135,25 @@ test('asking for a provider that is not installed is refused before anything is 
   }
 });
 
+test('a cancel serves the row with its second opinion parsed and closed', async () => {
+  const row = store.createReview({
+    repo: 'test-repo', branch: 'feat/cancel', base_branch: 'main', status: 'queued', second_opinion: JSON.stringify(pendingState('ocr')),
+  });
+  const app = Fastify();
+  await app.register(reviewRoutes);
+  try {
+    const res = await app.inject({ method: 'POST', url: `/api/reviews/${row.id}/cancel` });
+    assert.equal(res.statusCode, 200, res.body);
+    const review = res.json().review;
+    assert.equal(review.status, 'cancelled');
+    assert.equal(review.second_opinion.provider, 'ocr');
+    assert.equal(review.second_opinion.status, 'skipped');
+    assert.equal(review.second_opinion.error, 'cancelled');
+  } finally {
+    await app.close();
+  }
+});
+
 test('GET /api/reviewers lists the second-opinion providers and the default', async () => {
   const app = Fastify();
   await app.register(reviewerRoutes);

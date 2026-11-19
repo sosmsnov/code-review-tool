@@ -93,13 +93,13 @@ const schema = z.object({
   // How many reviews (branches) run at once. The lens fan-out inside one
   // review is five lenses plus synthesis, so the process ceiling is this * 6.
   REVIEW_CONCURRENCY: z.coerce.number().int().positive().default(2),
-  // How long ticket coverage waits after a branch review settles, so a batch is covered once.
   // --- second opinion: an external reviewer CLI after the primary review ---
   SECOND_OPINION: z.enum(SECOND_OPINION_CHOICES).default('none'),
   OCR_BIN: z.string().min(1).default('ocr'),
   SECOND_OPINION_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   OCR_CONCURRENCY: z.coerce.number().int().positive().default(3),
   OCR_TOKEN_BUDGET: z.coerce.number().int().positive().default(800_000),
+  // How long ticket coverage waits after a branch review settles, so a batch is covered once.
   COVERAGE_DEBOUNCE_MS: z.coerce.number().int().min(0).default(15_000),
   DOCKER_BIN: z.string().min(1).default('docker'),
   GIT_IMAGE: z.string().min(1).default('code-review-tool-git:latest'),

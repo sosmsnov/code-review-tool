@@ -73,7 +73,8 @@ export function parseElapsed(text: string | undefined): number | undefined {
   const match = /^\s*(?:(\d+)h)?\s*(?:(\d+)m(?!s))?\s*(?:([\d.]+)s)?\s*$/.exec(text);
   if (!match || !match.slice(1).some(Boolean)) return undefined;
   const [, h, m, s] = match;
-  return Math.round(((Number(h ?? 0) * 60 + Number(m ?? 0)) * 60 + Number(s ?? 0)) * 1000);
+  const ms = Math.round(((Number(h ?? 0) * 60 + Number(m ?? 0)) * 60 + Number(s ?? 0)) * 1000);
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 function parseComment(value: unknown): SecondOpinionComment | null {

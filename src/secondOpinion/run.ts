@@ -64,6 +64,11 @@ export interface SecondOpinionRun {
 
 const MAX_ERROR_TAIL = 1_000;
 
+/** ocr's own `--timeout`: a minute below the process timeout, at least one minute. */
+export function providerTimeoutMinutes(timeoutMs: number): number {
+  return Math.max(1, Math.floor((timeoutMs - 60_000) / 60_000));
+}
+
 /** `7 comments, 9 files, 245k tokens, 3m12s`. */
 export function providerLine(result: SecondOpinionResult, elapsedMs: number): string {
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -109,14 +114,15 @@ export async function runSecondOpinion(ctx: SecondOpinionContext): Promise<Secon
   const finish = (output: ReviewOutput): SecondOpinionRun => ({ output: { ...output, second_opinion: state }, state, raw });
   const fail = (stage: string, message: string): SecondOpinionRun => {
     onLog('warn', `${stage}: failed (${firstLine(message)})`);
-    update({ status: 'failed', finished_at: now(), error: message.slice(0, 2_000) });
+    // Stored errors reach the API as JSON: no control characters, whichever branch failed.
+    update({ status: 'failed', finished_at: now(), error: sanitizeLogMessage(message).slice(0, 2_000) });
     return finish(primary);
   };
 
   if (!provider.isAvailable()) {
     const message = secondOpinionNotInstalled(provider);
     onLog('warn', `second opinion ${name}: skipped (${message})`);
-    update({ status: 'skipped', finished_at: now(), error: message });
+    update({ status: 'skipped', finished_at: now(), error: sanitizeLogMessage(message) });
     return finish(primary);
   }
   if (signal?.aborted) throw new Error('Review cancelled');
@@ -157,7 +163,8 @@ export async function runSecondOpinion(ctx: SecondOpinionContext): Promise<Secon
           ruleFile,
           outputFile,
           concurrency: request.concurrency ?? config.OCR_CONCURRENCY,
-          timeoutMinutes: Math.max(1, Math.ceil(timeoutMs / 60_000)),
+          // A minute under the kill, so ocr stops on its own and writes what it has first.
+          timeoutMinutes: providerTimeoutMinutes(timeoutMs),
           tokenBudget: request.tokenBudget ?? config.OCR_TOKEN_BUDGET,
         }),
         cwd: checkout.dir,

@@ -27,7 +27,7 @@ import {
 import { compareFindings, toComparable } from '../findingCompare.js';
 import { githubLinks, rowLinks } from '../githubLinks.js';
 import { subscribe } from '../events.js';
-import { cancelReview, enqueueReview } from '../queue.js';
+import { cancelReview, closeSecondOpinion, enqueueReview } from '../queue.js';
 import { rawOutputDir } from '../reportWriter.js';
 import { resolveTargets } from '../resolver.js';
 import { coverageForReview, coveragePending, reviewAttribution } from '../coverage.js';
@@ -131,6 +131,15 @@ export function startRun(
   return review;
 }
 
+/**
+ * A review row as every route serves it: `second_opinion` parsed (null when
+ * none was requested), or only its summary for a list.
+ */
+export function reviewJson(row: ReviewRow, opts: { summary?: boolean } = {}) {
+  const state = parseSecondOpinionState(row.second_opinion);
+  return { ...row, second_opinion: opts.summary ? summarizeSecondOpinion(state) : state };
+}
+
 function reportAbsPath(row: ReviewRow): string | null {
   if (!row.report_path) return null;
   const abs = path.resolve(config.DATA_DIR, row.report_path);
@@ -204,7 +213,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       }
       // A batch of several branches of one ticket is a ticket run, so wait_for_ticket_review follows it.
       for (const [key, ids] of byGroup) if (ids.length > 1) createTicketRun(key, ids);
-      return reply.code(201).send({ reviews });
+      return reply.code(201).send({ reviews: reviews.map((r) => reviewJson(r)) });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -218,9 +227,8 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     // GitHub pages of each row's branch and PR: the UI does not know the organization.
     return {
       reviews: reviews.map((r) => ({
-        ...r,
         // The comments are for the detail page; a list row only says how the stage went.
-        second_opinion: summarizeSecondOpinion(parseSecondOpinionState(r.second_opinion)),
+        ...reviewJson(r, { summary: true }),
         links: rowLinks(config.GITHUB_ORG, r),
         ticket_label: ticketLabel(r),
       })),
@@ -268,7 +276,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const requirements = getRequirements(review.id);
     const group = ticketGroupContext(review, requirements);
     return {
-      review: { ...review, second_opinion: parseSecondOpinionState(review.second_opinion) },
+      review: reviewJson(review),
       // A slice of a ticket group: each row says where the ticket has it (this branch, another, the base, nowhere).
       requirements: group ? requirements.map((r, i) => ({ ...r, attribution: group.rows[i] })) : requirements,
       findings,
@@ -343,16 +351,17 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
           [target] = applyGroupBases(prev.group_key, [target]) as [ResolvedTarget];
         }
       }
-      // Without a choice, the re-run keeps the previous run's second opinion (none included).
+      // Without a choice, the re-run keeps the previous run's provider. A run without one stored
+      // (none chosen, or older than the stage) gets the env default, like a new review.
       const secondOpinion = resolveSecondOpinion(
         body.data.secondOpinion,
-        parseSecondOpinionState(prev.second_opinion)?.provider ?? null,
+        parseSecondOpinionState(prev.second_opinion)?.provider,
       );
       review = startRun(target, ticket, choice.reviewer.name, choice.model, { secondOpinion });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
-    return reply.code(201).send({ review });
+    return reply.code(201).send({ review: reviewJson(review) });
   });
 
   app.post('/api/reviews/:id/cancel', async (req, reply) => {
@@ -367,8 +376,10 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const after = getReview(review.id);
     if (after && ACTIVE.has(after.status)) {
       updateReview(review.id, { status: 'cancelled', finished_at: new Date().toISOString() });
+      closeSecondOpinion(review.id, 'cancelled');
     }
-    return { review: getReview(review.id) };
+    const settled = getReview(review.id);
+    return { review: settled ? reviewJson(settled) : null };
   });
 
   app.delete('/api/reviews/:id', async (req, reply) => {

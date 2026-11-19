@@ -58,7 +58,8 @@ export function cardCount(label: string, count: number, status: ReviewStatus): s
 /** The lens passes the runner is expected to emit progress for, in display order. */
 const LENSES = ['correctness', 'security', 'tests', 'contracts', 'regressions'] as const;
 
-export type LensState = 'pending' | 'running' | 'done' | 'failed';
+/** `skipped`: a stage that did not run (an uninstalled provider); its note says why. */
+export type LensState = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 export interface LensProgress {
   name: string;
   state: LensState;
@@ -78,6 +79,7 @@ export const CONCLUSION_CHIP = 'conclusion';
 function stageState(rest: string): { state: LensState; note: string } {
   const lower = rest.toLowerCase();
   if (lower.startsWith('start')) return { state: 'running', note: '' };
+  if (lower.startsWith('skip')) return { state: 'skipped', note: rest };
   if (lower.includes('fail') || lower.includes('error')) return { state: 'failed', note: rest };
   return { state: 'done', note: rest };
 }
@@ -123,7 +125,7 @@ export function deriveLensProgress(logs: readonly { message?: string | null }[],
   if (second || expectSecondOpinion) after.push({ name: SECOND_OPINION_CHIP, ...(second ?? { state: 'pending', note: '' }) });
   const conclusion = stages.get(CONCLUSION_CHIP);
   // No comments, no conclusion pass; a failed or skipped provider has none either.
-  const noConclusion = second && (second.state === 'failed' || /^(0 comments|skipped)/i.test(second.note));
+  const noConclusion = second && (second.state === 'failed' || second.state === 'skipped' || /^0 comments/i.test(second.note));
   if (conclusion) after.push({ name: CONCLUSION_CHIP, ...conclusion });
   else if ((second || expectSecondOpinion) && !noConclusion) after.push({ name: CONCLUSION_CHIP, state: 'pending', note: '' });
   return [...known, ...extra, ...after];

@@ -68,6 +68,7 @@ export function enqueueReview(reviewId: number): void {
     finishRow(reviewId, { status: 'failed', error: 'shutting down', finished_at: nowIso() });
     log(reviewId, 'error', 'Not started: this process is shutting down.');
     status(reviewId, 'failed');
+    closeSecondOpinion(reviewId, 'shutting down');
     return;
   }
   finishRow(reviewId, { runner_pid: SELF.pid, runner_started_at: SELF.startedAt, reviewer_pgids: null });
@@ -494,7 +495,7 @@ function secondOpinionRequest(reviewId: number, review: ReviewRow, slice: SliceI
 }
 
 /** A second opinion its review never got to (failed, cancelled, interrupted) must not stay pending or running. */
-function closeSecondOpinion(reviewId: number, reason: string, stored?: string | null): void {
+export function closeSecondOpinion(reviewId: number, reason: string, stored?: string | null): void {
   try {
     const json = stored !== undefined ? stored : getReview(reviewId)?.second_opinion;
     const closed = closeOpenState(parseSecondOpinionState(json), reason);

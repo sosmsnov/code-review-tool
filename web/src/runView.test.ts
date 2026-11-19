@@ -89,6 +89,14 @@ test('lens chips come from the lens lines; the second opinion and its conclusion
   const failed = deriveLensProgress(log('lens tests: 0 findings, 0 observations', 'second opinion ocr: failed (ocr exited with code 2)'), true)!;
   assert.deepEqual(failed.slice(-1).map((c) => [c.name, c.state]), [['second opinion', 'failed']]);
 
+  const skipped = deriveLensProgress(log(
+    'lens tests: 0 findings, 0 observations',
+    'second opinion ocr: skipped (Open Code Review is not installed: ocr not found on PATH)',
+  ), true)!;
+  assert.deepEqual(skipped.slice(-1), [{
+    name: 'second opinion', state: 'skipped', note: 'skipped (Open Code Review is not installed: ocr not found on PATH)',
+  }]);
+
   const empty = deriveLensProgress(log('lens tests: 0 findings, 0 observations', 'second opinion ocr: 0 comments, 3 files, 12k tokens, 40s'), true)!;
   assert.deepEqual(empty.slice(-1).map((c) => [c.name, c.state]), [['second opinion', 'done']]);
 });

@@ -284,14 +284,6 @@ function renderFindings(lines: string[], findings: readonly Finding[], secondOpi
   });
 }
 
-const SECOND_OPINION_STATUS: Record<string, string> = {
-  pending: 'pending',
-  running: 'running',
-  done: 'done',
-  skipped: 'skipped',
-  failed: 'failed',
-};
-
 /** The second opinion: what the provider said, how each comment was assessed, and what it changed. */
 function renderSecondOpinion(lines: string[], state: SecondOpinionState, output: ReviewOutput): void {
   lines.push('## Second opinion', '');
@@ -302,7 +294,7 @@ function renderSecondOpinion(lines: string[], state: SecondOpinionState, output:
   );
   lines.push('| | |', '|---|---|');
   lines.push(`| Provider | ${state.provider}${state.model ? ` · model ${cell(state.model)}` : ''} |`);
-  const status = SECOND_OPINION_STATUS[state.status] ?? state.status;
+  const status = state.status;
   lines.push(`| Status | ${state.error ? `${status}: ${cell(state.error.split('\n')[0])}` : status}${state.partial ? ' (partial: not every file was reviewed)' : ''} |`);
   if (state.elapsed_ms !== null) lines.push(`| Time | ${formatElapsed(state.elapsed_ms)} |`);
   if (state.tokens) {

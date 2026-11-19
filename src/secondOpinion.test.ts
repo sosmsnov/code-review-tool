@@ -12,9 +12,10 @@ process.env.DATA_DIR = path.join(root, 'data');
 const { buildBackground, buildRuleFile, MAX_BACKGROUND_CHARS, RULE_INCLUDE } = await import('./secondOpinion/files.js');
 const { buildOcrArgs, createOcrProvider, forwardOcrLine, parseElapsed, parseOcrOutput } = await import('./secondOpinion/ocr.js');
 const {
-  conclusionOutputSchema, mergeAssessments, MAX_ASSESSED_COMMENTS, renderPrimaryFindings, renderSecondOpinionComments, sortComments,
+  conclusionOutputSchema, mergeAssessments, MAX_ASSESSED_COMMENTS, parseFindingNumber, renderPrimaryFindings, renderSecondOpinionComments, sortComments,
 } = await import('./secondOpinion/conclusion.js');
 const { countsLine, formatElapsed, formatTokens } = await import('./secondOpinion/format.js');
+const { providerTimeoutMinutes } = await import('./secondOpinion/run.js');
 const { closeOpenState, parseSecondOpinionState, pendingState, summarizeSecondOpinion } = await import('./secondOpinion/state.js');
 const { resolveSecondOpinion, setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
 const { liveReviewerGroups, normalize, runPass, ReviewGroupTracker } = await import('./reviewRunner.js');
@@ -136,6 +137,7 @@ test('ocr output is parsed leniently', () => {
   assert.throws(() => parseOcrOutput('[]'), /not a JSON object/);
   assert.equal(parseElapsed('3m12s'), 192_000);
   assert.equal(parseElapsed('soon'), undefined);
+  assert.equal(parseElapsed('1.2.3s'), undefined);
 });
 
 test('ocr progress is forwarded without the per-tool-call lines', () => {
@@ -191,6 +193,8 @@ test('the stored state round-trips, summarises, and is closed when its review en
   assert.equal(formatTokens(244_534), '245k');
   assert.equal(formatTokens(950), '950');
   assert.equal(formatElapsed(191_537), '3m12s');
+  assert.equal(providerTimeoutMinutes(900_000), 14);
+  assert.equal(providerTimeoutMinutes(1_500), 1);
 });
 
 // --- the conclusion pass ------------------------------------------------------------
@@ -249,9 +253,22 @@ test('the conclusion answer is lenient on spelling and strict on what the merge 
   for (const bad of [
     { comment: 1, verdict: 'confirmed', reason: 'x' },
     { comment: 1, verdict: 'duplicate', duplicate_of: 3 },
+    { comment: 1, verdict: 'duplicate', duplicate_of: '#1, #4' },
+    { comment: 1, verdict: 'duplicate', duplicate_of: 1.5 },
+    { comment: 1, verdict: 'duplicate', duplicate_of: '1.5' },
     { comment: 1, verdict: 'maybe' },
   ]) {
     assert.equal(schema.safeParse({ assessments: [bad] }).success, false, JSON.stringify(bad));
+  }
+});
+
+test('a finding number is one integer, optionally after # or F; anything else is none', () => {
+  for (const [value, expected] of [
+    [2, 2], ['2', 2], [' #2 ', 2], ['F2', 2], ['f12', 12], ['# 3', 3],
+    ['#1, #4', null], ['1.5', null], [1.5, null], [0, null], ['-1', null], ['R2', null], ['two', null], ['', null],
+    [null, null], [undefined, null], [[2], null],
+  ] as const) {
+    assert.equal(parseFindingNumber(value), expected, JSON.stringify(value));
   }
 });
 
@@ -309,7 +326,7 @@ test('the merge adds confirmed findings and observations, marks duplicates, keep
     verdict: 'rejected', reason: 'The code handles it on line 9.', duplicate_of: null, finding_ord: null,
   });
   assert.equal(merged.comments[5]!.assessment!.verdict, 'not_assessed');
-  assert.match(merged.comments[MAX_ASSESSED_COMMENTS]!.assessment!.reason, /only the first 40 comments/);
+  assert.match(merged.comments[MAX_ASSESSED_COMMENTS]!.assessment!.reason, new RegExp(`only the first ${MAX_ASSESSED_COMMENTS} comments`));
   assert.deepEqual(merged.counts, {
     confirmed: 1, duplicate: 1, observation: 2, rejected: 1, not_assessed: MAX_ASSESSED_COMMENTS + 2 - 5,
   });

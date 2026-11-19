@@ -433,7 +433,7 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       reviewer: z.enum(REVIEWER_NAMES).optional(),
       model: z.string().min(1).max(64).optional(),
       secondOpinion: secondOpinionSchema.describe(
-        'Second opinion for the new run: "none" or a provider. Default: the previous run\'s choice.',
+        'Second opinion for the new run: "none" or a provider. Default: the previous run\'s provider, else the server default.',
       ),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },

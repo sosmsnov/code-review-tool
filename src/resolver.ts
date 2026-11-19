@@ -170,7 +170,7 @@ export interface ResolveOptions {
 export async function resolveTargets(
   input: string,
   options: ResolveOptions = {},
-): Promise<{ ticket: TicketInfo | null; targets: ResolvedTarget[] }> {
+): Promise<{ ticket: TicketInfo | null; targets: ResolvedTarget[]; fromTicket: boolean }> {
   const raw = normalizeInput(input);
   if (!raw) throw new Error('Unsupported input: empty');
 
@@ -184,7 +184,7 @@ export async function resolveTargets(
       includeWorkingTree: options.includeWorkingTree,
       baseBranch: options.baseBranch,
     });
-    return { ticket: manual ?? (await ticketFromBranchName(target.branch)), targets: [target] };
+    return { ticket: manual ?? (await ticketFromBranchName(target.branch)), targets: [target], fromTicket: false };
   }
   if (options.includeWorkingTree) {
     throw new Error('Uncommitted changes can only be included for a local input: local:<repo>#<branch>.');
@@ -209,6 +209,7 @@ export async function resolveTargets(
     if (pr?.head?.ref) {
       const branch = pr.head.ref;
       return {
+        fromTicket: false,
         ticket: manual
           ?? (await ticketFromBranchName(branch))
           ?? (await ticketFromPullRequest(prRef.repo, prRef.number)),
@@ -235,7 +236,7 @@ export async function resolveTargets(
         `No branches found for ${ticket.key}. Searched the ticket's PR attachments and the branches of: ${ALLOWED_REPOS.join(', ')}.`,
       );
     }
-    return { ticket, targets };
+    return { ticket, targets, fromTicket: true };
   }
 
   const treeMatch = new RegExp(`^https://github\\.com/${org}/([^/]+)/tree/(.+?)/?$`, 'i').exec(raw);
@@ -249,6 +250,7 @@ export async function resolveTargets(
   if (pair) {
     assertAllowedRepo(pair.repo);
     return {
+      fromTicket: false,
       ticket: manual ?? (await ticketFromBranchName(pair.branch)),
       targets: [
         { repo: pair.repo, branch: pair.branch, baseBranch: await defaultBranch(pair.repo), prNumber: null },

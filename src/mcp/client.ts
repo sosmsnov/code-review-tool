@@ -257,7 +257,7 @@ export class ApiClient {
     return this.requestJson<T>(`/api/reviews/${id}/cancel`, { method: 'POST' });
   }
 
-  rerun<T>(id: number, body: { reviewer?: string; model?: string }): Promise<T> {
+  rerun<T>(id: number, body: { reviewer?: string; model?: string; secondOpinion?: string }): Promise<T> {
     return this.requestJson<T>(`/api/reviews/${id}/rerun`, { method: 'POST', body });
   }
 

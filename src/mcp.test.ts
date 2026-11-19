@@ -165,6 +165,33 @@ test('a finished review carries its outcome, unmet requirements, and capped find
   assert.equal(detail.progress, null);
 });
 
+test('a review with a second opinion carries its summary, and corroborated findings say so', () => {
+  const state = {
+    provider: 'ocr', status: 'done', requested_at: null, started_at: null, finished_at: null, elapsed_ms: 192_000,
+    model: 'm', tokens: { total: 1200, input: 1000, output: 200 }, files_reviewed: 4, partial: false, comments_total: 2,
+    counts: { confirmed: 1, duplicate: 1, observation: 0, rejected: 0, not_assessed: 0 },
+    comments: [{ path: 'a.ts', start_line: 1, end_line: 1, severity: 'low', category: 'bug', content: 'c', assessment: null }],
+    conclusion: 'x', primary_verdict: 'approve', primary_can_merge: true, error: null,
+  };
+  const findings = [finding(1, 'major', { corroborated: 1 }), finding(2, 'major', { lens: 'second_opinion' })];
+  // The detail route serves the state parsed; a raw row carries the JSON.
+  for (const second of [state, JSON.stringify(state)]) {
+    const detail = reviewDetail({
+      review: { ...doneRow(9), second_opinion: second as unknown as string },
+      findings,
+    }, 'http://x/review/9');
+    assert.deepEqual(detail.second_opinion, {
+      provider: 'ocr', status: 'done', comments_total: 2, counts: state.counts, primary_verdict: 'approve',
+      elapsed_ms: 192_000, tokens_total: 1200, error: null,
+    });
+  }
+  const detail = reviewDetail({ review: doneRow(9), findings }, 'http://x/review/9');
+  assert.equal('second_opinion' in detail, false);
+  assert.equal(detail.findings[0]!.corroborated, true);
+  assert.equal(detail.findings[1]!.lens, 'second_opinion');
+  assert.equal('corroborated' in detail.findings[1]!, false);
+});
+
 test('a long report is cut with a note pointing at the full one', () => {
   assert.equal(truncateReport('short', 100, 'u'), 'short');
   const cut = truncateReport('y'.repeat(5000), 1000, 'http://x/review/1');

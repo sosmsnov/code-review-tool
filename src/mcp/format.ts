@@ -12,6 +12,8 @@ import type {
   PreviewRole, PreviewStatus, RequirementRow, ReviewGroup, ReviewRow, ReviewSource, ReviewStatus, Severity, Verdict,
 } from '../types.js';
 import { isSatisfied, type Attribution, type AttributionCounts, type TicketCoverageBadge } from '../coverageView.js';
+// Reads no configuration: it imports only the provider names.
+import { summarizeSecondOpinion, toSecondOpinionState } from '../secondOpinion/state.js';
 
 export const TERMINAL_STATUSES: readonly ReviewStatus[] = ['done', 'failed', 'cancelled'];
 export const ACTIVE_STATUSES: readonly ReviewStatus[] = ['queued', 'fetching', 'reviewing'];
@@ -57,9 +59,11 @@ export interface CompactFinding {
   cause: string | null;
   /** How the location checked out at HEAD; `unverified` on rows older than the check. */
   anchor_status: AnchorStatus;
-  /** The lens the finding came from; `tool` for a deterministic tool check; null when unknown. */
+  /** The lens the finding came from; `tool` for a deterministic tool check, `second_opinion` for a confirmed comment of the second opinion; null when unknown. */
   lens: FindingSource | null;
   problem: string | null;
+  /** Present (true) when the second opinion reported the same defect. */
+  corroborated?: true;
 }
 
 /**
@@ -87,6 +91,7 @@ export function compactFindings(
       anchor_status: f.anchor_status ?? 'unverified',
       lens: f.lens ?? null,
       problem: truncate(f.problem, textMax),
+      ...(f.corroborated ? { corroborated: true as const } : {}),
     })),
     omitted: sorted.length - kept.length,
   };
@@ -310,6 +315,8 @@ export function reviewDetail(payload: ReviewDetailPayload, url: string, opts: Re
     }));
   const byId = requirements.some((r) => r.requirement_id);
   const proposed = payload.proposed_requirements ?? [];
+  // The detail route serves it parsed; a raw row carries the stored JSON.
+  const secondOpinion = summarizeSecondOpinion(toSecondOpinionState(review.second_opinion as unknown));
 
   return {
     ...reviewRef(review, url),
@@ -339,6 +346,7 @@ export function reviewDetail(payload: ReviewDetailPayload, url: string, opts: Re
     ...(done && proposed.length
       ? { proposed_requirements: proposed.slice(0, 20).map((p) => ({ text: truncate(p.text, 300), reason: truncate(p.reason, 300) })) }
       : {}),
+    ...(secondOpinion ? { second_opinion: secondOpinion } : {}),
     blocking_count: done ? review.blocking_count ?? 0 : null,
     severity_counts: done ? severityCounts(findings) : null,
     findings: done ? compact.findings : [],
@@ -610,9 +618,27 @@ interface ReviewerPayload {
   fetchedAt?: string | null;
 }
 
-export function compactReviewers(payload: { reviewers: ReviewerPayload[]; defaultReviewer: string }, maxModels = 40) {
+interface SecondOpinionProvidersPayload {
+  providers: { name: string; label: string; available: boolean; hint: string | null }[];
+  default: string;
+}
+
+export function compactReviewers(
+  payload: { reviewers: ReviewerPayload[]; defaultReviewer: string; second_opinion?: SecondOpinionProvidersPayload },
+  maxModels = 40,
+) {
   return {
     default_reviewer: payload.defaultReviewer,
+    ...(payload.second_opinion
+      ? {
+          second_opinion: {
+            default: payload.second_opinion.default,
+            providers: payload.second_opinion.providers.map((p) => ({
+              name: p.name, label: p.label, available: p.available, ...(p.hint ? { hint: p.hint } : {}),
+            })),
+          },
+        }
+      : {}),
     reviewers: payload.reviewers.map((r) => ({
       name: r.name,
       label: r.label,

@@ -9,6 +9,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 // Names only: this module imports nothing (no config, no secrets).
 import { REVIEWER_NAMES } from '../reviewers/types.js';
+import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
 import type { ResolvedTarget, ReviewGroup, ReviewRow, TicketInfo } from '../types.js';
 import { ApiClient, ApiError, ApiNoAnswerError, ApiUnreachableError } from './client.js';
 import {
@@ -90,6 +91,11 @@ export interface CreateServerOptions {
 export function createMcpServer({ api, env = process.env }: CreateServerOptions): McpServer {
   const server = new McpServer({ name: 'code-review-tool', version }, { instructions: INSTRUCTIONS });
   const refusal = (): string | null => mutationRefusal(env);
+  const secondOpinionSchema = z.enum(SECOND_OPINION_CHOICES).optional().describe(
+    'After the review, an external review tool reviews the same diff on its own; the review\'s reviewer then checks ' +
+      'every comment against the code and only confirmed ones become findings (see list_reviewers for the providers). ' +
+      '"none" turns it off. Default: the server default.',
+  );
 
   server.registerTool('list_reviewers', {
     title: 'List reviewers',
@@ -99,7 +105,8 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       'here for start_review / rerun_review. Omitting both uses the server default reviewer and its default model. ' +
       'Model lists are discovered from each CLI (or the vendor API) and cached for ten minutes: "source" says where ' +
       'a list came from (cli, cli-cache, cli-help, api), "fetched_at" when, and "no_models" what to do when a list ' +
-      'is empty. refresh=true discovers every list again now.',
+      'is empty. refresh=true discovers every list again now. "second_opinion" lists the second-opinion providers ' +
+      '(whether each is installed) and the server default for the secondOpinion option.',
     inputSchema: {
       refresh: z.boolean().optional().describe('Discover the model lists again instead of using the cached ones.'),
     },
@@ -173,6 +180,7 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
         .describe('What the change must do, when there is no ticket (or instead of it). First line = title.'),
       targets: z.array(z.string().min(3).max(300)).min(1).max(20).optional()
         .describe('Ticket inputs only: review just these of the ticket\'s branches, each as "repo#branch".'),
+      secondOpinion: secondOpinionSchema,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (args) => guarded(async () => {
@@ -202,6 +210,7 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       ...(args.baseBranch ? { baseBranch: args.baseBranch } : {}),
       ...(args.includeWorkingTree ? { includeWorkingTree: true } : {}),
       ...(args.requirementsText ? { requirementsText: args.requirementsText } : {}),
+      ...(args.secondOpinion ? { secondOpinion: args.secondOpinion } : {}),
     };
     const { reviews } = await api.createReviews<{ reviews: ReviewRow[] }>(body);
     return ok({
@@ -222,7 +231,11 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       'how many were cut). Each finding has kind (diff | regression | stale_doc | consumer: a non-diff location is an ' +
       'untouched site, and cause names the changed line behind it), anchor_status (ok | off_diff | missing_path | ' +
       'line_out_of_range | unverified), and lens (the lens it came from; "tool" for a deterministic tool check, ' +
-      'such as a migration number collision, that the model cannot drop). status is queued | fetching | reviewing | ' +
+      'such as a migration number collision, that the model cannot drop; "second_opinion" for a confirmed comment of the ' +
+      'second opinion), and corroborated=true when the second opinion reported the same defect. A review with a ' +
+      'second opinion also has second_opinion {provider, status (pending | running | done | failed | skipped), ' +
+      'comments_total, counts per assessment (confirmed | duplicate | observation | rejected | not_assessed), ' +
+      'primary_verdict (the verdict before it), elapsed_ms, tokens_total, error}. status is queued | fetching | reviewing | ' +
       'done | failed | cancelled; "error" explains ' +
       'a failure, "progress" is the latest log line while it runs. get_report returns the full Markdown report.',
     inputSchema: {
@@ -419,14 +432,18 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       id: idSchema,
       reviewer: z.enum(REVIEWER_NAMES).optional(),
       model: z.string().min(1).max(64).optional(),
+      secondOpinion: secondOpinionSchema.describe(
+        'Second opinion for the new run: "none" or a provider. Default: the previous run\'s choice.',
+      ),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, ({ id, reviewer, model }) => guarded(async () => {
+  }, ({ id, reviewer, model, secondOpinion }) => guarded(async () => {
     const refused = refusal();
     if (refused) return fail(refused);
     const { review } = await api.rerun<{ review: ReviewRow }>(id, {
       ...(reviewer ? { reviewer } : {}),
       ...(model ? { model } : {}),
+      ...(secondOpinion ? { secondOpinion } : {}),
     });
     return ok({
       review: reviewRef(review, api.reviewUrl(review.id)),
@@ -460,6 +477,7 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
         .describe('Only these branches of the group, each as "repo#branch". Default: all.'),
       refresh: z.boolean().optional()
         .describe('Ask the tracker for the ticket\'s branches again (default true). false: only the stored group.'),
+      secondOpinion: secondOpinionSchema,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (args) => guarded(async () => {
@@ -471,6 +489,7 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       ...(args.requirementsText ? { requirementsText: args.requirementsText } : {}),
       ...(args.branches ? { branches: args.branches } : {}),
       ...(args.refresh !== undefined ? { refresh: args.refresh } : {}),
+      ...(args.secondOpinion ? { secondOpinion: args.secondOpinion } : {}),
     };
     const out = await api.startTicketReview<TicketPayload & {
       run: TicketRunPayload; reviews: ReviewRow[]; notes?: string[]; resolve_warning?: string;

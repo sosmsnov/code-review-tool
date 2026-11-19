@@ -37,6 +37,9 @@ import {
   createTicketRun, getTicketBranch, latestDoneCoverage, parseCoverageRequirements, syncMembersFromReviews,
 } from '../ticketStore.js';
 import { activeChecklist, addUserRequirements, splitRequirementsText } from '../ticketRequirements.js';
+import { resolveSecondOpinion, type SecondOpinionName } from '../secondOpinion/index.js';
+import { parseSecondOpinionState, pendingState, summarizeSecondOpinion } from '../secondOpinion/state.js';
+import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
 import type { ProposedRequirement, RequirementRow, ResolvedTarget, ReviewRow, TicketInfo } from '../types.js';
 
 const ACTIVE = new Set(['queued', 'fetching', 'reviewing']);
@@ -61,12 +64,15 @@ const createBody = z.object({
   includeWorkingTree: z.boolean().optional(),
   // local:<repo>#<branch> only: the branch to diff against; absent → the detected parent.
   baseBranch: z.string().min(1).max(255).optional(),
+  // A second opinion after the review; absent → SECOND_OPINION.
+  secondOpinion: z.enum(SECOND_OPINION_CHOICES).optional(),
 });
 
 // Optional overrides for a re-run; an absent or empty body keeps the old run's choice.
 const rerunBody = z.object({
   reviewer: z.enum(REVIEWER_NAMES).optional(),
   model: z.string().min(1).max(64).optional(),
+  secondOpinion: z.enum(SECOND_OPINION_CHOICES).optional(),
 });
 
 const listQuery = z.object({
@@ -96,7 +102,7 @@ export function startRun(
   ticket: TicketInfo | null,
   reviewerName: string | undefined,
   model: string | undefined,
-  opts: { dependsOn?: number | null } = {},
+  opts: { dependsOn?: number | null; secondOpinion?: SecondOpinionName | null } = {},
 ): ReviewRow {
   const reviewer = getReviewer(reviewerName);
   // A missing CLI is a configuration problem, not a failed review: refuse it
@@ -119,6 +125,7 @@ export function startRun(
     reviewer: reviewer.name,
     model: model ?? reviewer.defaultModel,
     depends_on: opts.dependsOn ?? null,
+    second_opinion: opts.secondOpinion ? JSON.stringify(pendingState(opts.secondOpinion)) : null,
   });
   enqueueReview(review.id);
   return review;
@@ -138,13 +145,15 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request body' });
     const { input, targets, requirementsText, includeWorkingTree, baseBranch } = parsed.data;
 
-    // The model is checked before anything is resolved or queued.
+    // The model and the second opinion are checked before anything is resolved or queued.
     let reviewer: string;
     let model: string;
+    let secondOpinion: SecondOpinionName | null;
     try {
       const choice = await resolveStartChoice(parsed.data.reviewer, parsed.data.model);
       reviewer = choice.reviewer.name;
       model = choice.model;
+      secondOpinion = resolveSecondOpinion(parsed.data.secondOpinion);
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -188,7 +197,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       const byGroup = new Map<string, number[]>();
       for (const step of orderBatch(chosen, (t) => ticketGroupOf(t, ticket))) {
         const dependsOn = step.parentIndex !== null ? reviews[step.parentIndex]!.id : null;
-        const review = startRun(step.target, ticket, reviewer, model, { dependsOn });
+        const review = startRun(step.target, ticket, reviewer, model, { dependsOn, secondOpinion });
         reviews.push(review);
         const key = ticketGroupOf(step.target, ticket);
         if (key) byGroup.set(key, [...(byGroup.get(key) ?? []), review.id]);
@@ -208,7 +217,13 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const { reviews, total } = listReviews({ ...rest, limit, offset });
     // GitHub pages of each row's branch and PR: the UI does not know the organization.
     return {
-      reviews: reviews.map((r) => ({ ...r, links: rowLinks(config.GITHUB_ORG, r), ticket_label: ticketLabel(r) })),
+      reviews: reviews.map((r) => ({
+        ...r,
+        // The comments are for the detail page; a list row only says how the stage went.
+        second_opinion: summarizeSecondOpinion(parseSecondOpinionState(r.second_opinion)),
+        links: rowLinks(config.GITHUB_ORG, r),
+        ticket_label: ticketLabel(r),
+      })),
       total,
     };
   });
@@ -253,7 +268,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const requirements = getRequirements(review.id);
     const group = ticketGroupContext(review, requirements);
     return {
-      review,
+      review: { ...review, second_opinion: parseSecondOpinionState(review.second_opinion) },
       // A slice of a ticket group: each row says where the ticket has it (this branch, another, the base, nowhere).
       requirements: group ? requirements.map((r, i) => ({ ...r, attribution: group.rows[i] })) : requirements,
       findings,
@@ -328,7 +343,12 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
           [target] = applyGroupBases(prev.group_key, [target]) as [ResolvedTarget];
         }
       }
-      review = startRun(target, ticket, choice.reviewer.name, choice.model);
+      // Without a choice, the re-run keeps the previous run's second opinion (none included).
+      const secondOpinion = resolveSecondOpinion(
+        body.data.secondOpinion,
+        parseSecondOpinionState(prev.second_opinion)?.provider ?? null,
+      );
+      review = startRun(target, ticket, choice.reviewer.name, choice.model, { secondOpinion });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }

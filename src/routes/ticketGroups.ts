@@ -24,6 +24,8 @@ import {
   addUserRequirements, checklistPayload, ChecklistError, replaceUserRequirements, setTicketRequirements, splitRequirementsText,
   MAX_REQUIREMENT_TEXT, MAX_REQUIREMENTS,
 } from '../ticketRequirements.js';
+import { resolveSecondOpinion, type SecondOpinionName } from '../secondOpinion/index.js';
+import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
 import { startRun } from './reviews.js';
 
 export interface TicketRouteDeps {
@@ -31,7 +33,7 @@ export interface TicketRouteDeps {
   detect: DetectDeps;
   startRun: (
     target: ResolvedTarget, ticket: TicketInfo | null, reviewer: string | undefined, model: string | undefined,
-    opts?: { dependsOn?: number | null },
+    opts?: { dependsOn?: number | null; secondOpinion?: SecondOpinionName | null },
   ) => ReviewRow;
   recompute: typeof recomputeCoverage;
   pending: (key: string) => boolean;
@@ -60,6 +62,8 @@ const reviewBody = z.object({
   branches: z.array(branchRef).min(1).max(40).optional(),
   // Ask the tracker for the ticket's branches again (default true).
   refresh: z.boolean().optional(),
+  // A second opinion for every branch review; absent → SECOND_OPINION.
+  secondOpinion: z.enum(SECOND_OPINION_CHOICES).optional(),
 });
 
 const coverageBody = z.object({
@@ -260,10 +264,12 @@ export async function ticketGroupRoutes(app: FastifyInstance, opts: { deps?: Par
     const { requirementsText, branches, refresh = true } = body.data;
     let reviewer: string;
     let model: string;
+    let secondOpinion: SecondOpinionName | null;
     try {
       const choice = await resolveStartChoice(body.data.reviewer, body.data.model);
       reviewer = choice.reviewer.name;
       model = choice.model;
+      secondOpinion = resolveSecondOpinion(body.data.secondOpinion);
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -340,7 +346,7 @@ export async function ticketGroupRoutes(app: FastifyInstance, opts: { deps?: Par
           }
         }
         const dependsOn = step.parentIndex !== null ? reviews[step.parentIndex]!.id : null;
-        reviews.push(deps.startRun(target, runTicket, reviewer, model, { dependsOn }));
+        reviews.push(deps.startRun(target, runTicket, reviewer, model, { dependsOn, secondOpinion }));
       }
     } catch (err) {
       if (reviews.length === 0) return reply.code(400).send({ error: (err as Error).message });

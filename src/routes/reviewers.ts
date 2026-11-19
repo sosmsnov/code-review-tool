@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import { listReviewersWithModels } from '../reviewers/index.js';
+import { defaultSecondOpinion, listSecondOpinionProviders } from '../secondOpinion/index.js';
 
 /** `?refresh=1` (or `true`, `yes`) asks every reviewer for its models again. */
 export function isRefreshRequested(value: unknown): boolean {
@@ -15,5 +16,6 @@ export async function reviewerRoutes(app: FastifyInstance): Promise<void> {
       refresh: isRefreshRequested((req.query as { refresh?: unknown } | undefined)?.refresh),
     }),
     defaultReviewer: config.defaultReviewer,
+    second_opinion: { providers: listSecondOpinionProviders(), default: defaultSecondOpinion() },
   }));
 }

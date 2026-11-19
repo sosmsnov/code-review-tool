@@ -8,12 +8,20 @@
 - `data/reports/.../run-N-<timestamp>.lenses/`: the raw JSON answer of each
   lens (`<lens>.json`, or `{ "error": ... }` for a failed lens), of the
   synthesis (`synthesis.json`), and of the re-anchor pass when it ran
-  (`reanchor.json`), for debugging a finding back to its source.
+  (`reanchor.json`), for debugging a finding back to its source. A review with
+  a second opinion adds the provider's output verbatim
+  (`second-opinion.json`), the files it was given
+  (`second-opinion.background.md`, `second-opinion.rule.json`), the conclusion
+  answer (`conclusion.json`), and its re-anchor answer when that ran
+  (`conclusion.reanchor.json`).
 - `rules/` (or `RULES_DIR`): repository rules and tool-check configs,
   gitignored; see [rules.example/](../rules.example/README.md).
 - `data/checkouts/` — temporary checkouts, removed after a successful review
   (kept after a failure, for inspection).
 - `data/previews/<id>/` — scratch directory of one preview environment.
+- `data/second-opinion/<review id>/`: the provider's working files while
+  the second opinion runs (background, rule file, output); removed when the
+  stage ends, never written into the checkout.
 
 The whole `data/` directory is gitignored and local only.
 

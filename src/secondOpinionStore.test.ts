@@ -16,7 +16,7 @@ process.env.DATA_DIR = path.join(root, 'data');
 const store = await import('./db.js');
 const { reviewRoutes } = await import('./routes/reviews.js');
 const { reviewerRoutes } = await import('./routes/reviewers.js');
-const { renderReport } = await import('./reportWriter.js');
+const { renderReport, writeReport, rawOutputDir } = await import('./reportWriter.js');
 const { setReviewerForTests } = await import('./reviewers/index.js');
 const { createOcrProvider } = await import('./secondOpinion/ocr.js');
 const { setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
@@ -166,6 +166,38 @@ test('GET /api/reviewers lists the second-opinion providers and the default', as
   } finally {
     await app.close();
   }
+});
+
+test('the second opinion files are kept beside the report, and only when there was one', async () => {
+  const review = {
+    id: 3, repo: 'test-repo', branch: 'feat/raw', base_branch: 'main', run_index: 1, head_sha: 'h'.repeat(40), base_sha: 'b'.repeat(40),
+    reviewer: 'claude', model: 'fake', ticket_key: null, ticket_title: null, ticket_url: null,
+  };
+  const checkout = { dir: '/x', headSha: 'h'.repeat(40), baseSha: 'b'.repeat(40), filesChanged: 1, additions: 1, deletions: 1, changedFiles: [] };
+  const output: ReviewOutput = {
+    summary: 's', requirements: [], findings: [], observations: [], verdict: 'approve', can_merge: true, conclusion: '',
+  };
+  const lenses = [{ lens: 'correctness', raw: { findings: [], observations: [] }, error: null }];
+  const providerOutput = '{"status":"complete","comments":[]}\n';
+  const rel = await writeReport(review, null, checkout, output, {
+    lenses,
+    secondOpinion: {
+      output: providerOutput,
+      background: '# Change under review',
+      rule: '{"include":[]}\n',
+      conclusion: { assessments: [], conclusion: 'x' },
+      reanchor: { anchors: [] },
+    },
+  });
+  const dir = path.join(process.env.DATA_DIR!, rawOutputDir(rel));
+  assert.equal(fs.readFileSync(path.join(dir, 'second-opinion.json'), 'utf8'), providerOutput);
+  assert.equal(fs.readFileSync(path.join(dir, 'second-opinion.background.md'), 'utf8'), '# Change under review');
+  assert.equal(fs.readFileSync(path.join(dir, 'second-opinion.rule.json'), 'utf8'), '{"include":[]}\n');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'conclusion.json'), 'utf8')), { assessments: [], conclusion: 'x' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'conclusion.reanchor.json'), 'utf8')), { anchors: [] });
+
+  const plain = await writeReport({ ...review, id: 4, branch: 'feat/plain' }, null, checkout, output, { lenses });
+  assert.deepEqual(fs.readdirSync(path.join(process.env.DATA_DIR!, rawOutputDir(plain))), ['correctness.json']);
 });
 
 test('the report has a second opinion section, tags its findings, and marks corroborated ones', () => {

@@ -92,13 +92,17 @@ const conclusion = {
   conclusion: 'One real defect the review missed.',
 };
 
-// What the fake reviewer answers to the conclusion prompt; a test may swap it.
+// Touched by the fake reviewer when it hangs on the conclusion prompt.
+const conclusionStarted = path.join(root, 'conclusion-started');
+// What the fake reviewer answers to the conclusion prompt; a test may swap it (HANG: never answers).
 let conclusionAnswer = JSON.stringify(conclusion);
 
 const reviewerScript = `
 printf '%s' "$1" > "$PROMPT_DIR/$$.txt"
 case "$1" in
-  *"Your job: conclusion"*) printf '%s\\n' "$CONCLUSION_JSON" ;;
+  *"Your job: conclusion"*)
+    if [ "$CONCLUSION_JSON" = HANG ]; then touch "$HANG_FILE"; sleep 37 & sleep 37 & wait; fi
+    printf '%s\\n' "$CONCLUSION_JSON" ;;
   *"Your job: synthesis"*) printf '%s\\n' "$SYNTH_JSON" ;;
   *) printf '%s\\n' '{"findings":[],"observations":[]}' ;;
 esac
@@ -115,6 +119,7 @@ const fakeReviewer: ReviewerDefinition = {
     PROMPT_DIR: prompts,
     SYNTH_JSON: JSON.stringify(synthesis),
     CONCLUSION_JSON: conclusionAnswer,
+    HANG_FILE: conclusionStarted,
   }),
   parseStreamLine: (line) => ({ result: line }),
   discoverModels: async () => ({ models: [], source: null, fetchedAt: Date.now(), hint: null }),
@@ -144,6 +149,9 @@ case "$mode" in
   empty)
     echo "[ocr] 1 file(s) changed, reviewing 1" >&2
     cp "${emptyOutput}" "$out" ;;
+  notjson)
+    echo "[ocr] 1 file(s) changed, reviewing 1" >&2
+    printf 'not json' > "$out" ;;
   fail)
     echo "[ocr] 1 file(s) changed, reviewing 1" >&2
     echo "error: provider returned 500" >&2
@@ -154,7 +162,7 @@ case "$mode" in
 esac
 `, { mode: 0o755 });
 
-function setMode(mode: 'ok' | 'empty' | 'fail' | 'hang'): void {
+function setMode(mode: 'ok' | 'empty' | 'notjson' | 'fail' | 'hang'): void {
   fs.writeFileSync(modeFile, mode);
   fs.rmSync(prompts, { recursive: true, force: true });
   fs.mkdirSync(prompts);
@@ -324,6 +332,49 @@ test('a provider that runs past its timeout is killed and the primary result sta
   assert.deepEqual(liveReviewerGroups(), []);
   // The provider got a shorter budget of its own, at least one minute.
   assert.ok(fs.readFileSync(argsFile, 'utf8').includes('--timeout\n1\n'));
+});
+
+test('unparsable provider output fails the stage and sends no conclusion prompt', async () => {
+  setMode('notjson');
+  const logs: string[] = [];
+  const out = await runReview(review, checkout, null, (_l, m) => logs.push(m), { ...baseOpts, secondOpinion: request([]) });
+  const state = out.second_opinion!;
+  assert.equal(state.status, 'failed');
+  assert.match(state.error!, /the output is not valid JSON/);
+  assert.equal(out.verdict, 'approve');
+  assert.deepEqual(out.findings.map((f) => f.title), ['Primary finding']);
+  assert.equal(sentPrompts().filter((p) => p.includes('Your job: conclusion')).length, 0);
+  assert.equal(out.secondOpinionRaw!.output, 'not json');
+  assert.ok(logs.some((l) => l.startsWith('second opinion ocr: failed (')));
+});
+
+test('cancelling during the conclusion pass cancels the review and leaves no process running', async () => {
+  setMode('ok');
+  fs.rmSync(conclusionStarted, { force: true });
+  conclusionAnswer = 'HANG';
+  try {
+    const controller = new AbortController();
+    const groups: RecordedGroup[][] = [];
+    const run = runReview(review, checkout, null, () => {}, {
+      ...baseOpts, signal: controller.signal, onProcessGroups: (g) => groups.push(g), secondOpinion: request([]),
+    }).catch((err: Error) => err);
+    const deadline = Date.now() + 20_000;
+    while (!fs.existsSync(conclusionStarted) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(fs.existsSync(conclusionStarted), 'the conclusion pass started');
+    const live = groups.at(-1)!.map((g) => g.pgid);
+    assert.equal(live.length, 1);
+    controller.abort();
+    const err = await run;
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /cancelled/);
+    const gone = Date.now() + 3_000;
+    while (live.some(isGroupAlive) && Date.now() < gone) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(!live.some(isGroupAlive));
+    assert.deepEqual(liveReviewerGroups(), []);
+    assert.deepEqual(groups.at(-1), []);
+  } finally {
+    conclusionAnswer = JSON.stringify(conclusion);
+  }
 });
 
 test('a provider with no comments ends the stage without a conclusion process', async () => {

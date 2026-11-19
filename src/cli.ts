@@ -8,7 +8,7 @@ import {
 } from './reviewers/index.js';
 import { resolveTargets } from './resolver.js';
 import { getSecondOpinionProvider, resolveSecondOpinion, secondOpinionNotInstalled } from './secondOpinion/index.js';
-import { pendingState } from './secondOpinion/state.js';
+import { storedChoice } from './secondOpinion/state.js';
 import type { ResolvedTarget, TicketInfo } from './types.js';
 
 const HELP = `code-review-tool — run a read-only code review from the terminal.
@@ -218,7 +218,7 @@ async function main(): Promise<number> {
       base_reason: target.source === 'local' ? target.baseReason ?? null : null,
       reviewer: reviewer.name,
       model,
-      second_opinion: secondOpinion ? JSON.stringify(pendingState(secondOpinion)) : null,
+      second_opinion: storedChoice(secondOpinion),
     });
     ids.push(review.id);
     enqueueReview(review.id);

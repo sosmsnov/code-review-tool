@@ -187,6 +187,8 @@ test('a review with a second opinion carries its summary, and corroborated findi
   }
   const detail = reviewDetail({ review: doneRow(9), findings }, 'http://x/review/9');
   assert.equal('second_opinion' in detail, false);
+  const none = reviewDetail({ review: { ...doneRow(9), second_opinion: '{"provider":"none"}' }, findings }, 'http://x/review/9');
+  assert.equal('second_opinion' in none, false);
   assert.equal(detail.findings[0]!.corroborated, true);
   assert.equal(detail.findings[1]!.lens, 'second_opinion');
   assert.equal('corroborated' in detail.findings[1]!, false);

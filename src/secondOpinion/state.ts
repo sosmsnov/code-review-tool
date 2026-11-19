@@ -28,7 +28,34 @@ export function pendingState(provider: SecondOpinionName, now: string = new Date
   };
 }
 
-/** `reviews.second_opinion` parsed; null when absent or unreadable. Missing fields get their empty values. */
+/**
+ * What `reviews.second_opinion` holds for a run created without a second
+ * opinion, so a re-run can tell "none chosen" from a row older than the stage
+ * (NULL). It parses as no stage everywhere.
+ */
+export const NO_SECOND_OPINION = JSON.stringify({ provider: 'none' });
+
+/** The column value for a new run: the pending stage, or the "none" marker. */
+export function storedChoice(provider: SecondOpinionName | null, now?: string): string {
+  return provider ? JSON.stringify(pendingState(provider, now)) : NO_SECOND_OPINION;
+}
+
+/**
+ * The choice a run was created with: a provider, `none`, or undefined for a
+ * row older than the stage (or unreadable), which gets the env default.
+ */
+export function storedSecondOpinionChoice(json: string | null | undefined): SecondOpinionName | 'none' | undefined {
+  if (!json) return undefined;
+  try {
+    const provider = (JSON.parse(json) as { provider?: unknown } | null)?.provider;
+    if (provider === 'none') return 'none';
+    return isSecondOpinionName(provider) ? provider : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `reviews.second_opinion` parsed; null when absent, unreadable, or the "none" marker. Missing fields get their empty values. */
 export function parseSecondOpinionState(json: string | null | undefined): SecondOpinionState | null {
   if (!json) return null;
   try {

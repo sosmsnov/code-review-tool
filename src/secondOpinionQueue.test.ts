@@ -17,15 +17,17 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crt-so-queue-'));
 process.env.DATA_DIR = path.join(root, 'data');
 // The env default is a provider here, so a re-run that falls back to it is visible.
 process.env.SECOND_OPINION = 'ocr';
+// No sandbox: a review that starts fails at once, which is the failure path under test.
+process.env.DOCKER_BIN = '/bin/false';
 
 const store = await import('./db.js');
-const { recoverInterrupted, stopAllReviews } = await import('./queue.js');
+const { enqueueReview, recoverInterrupted, stopAllReviews } = await import('./queue.js');
 const { isPidAlive } = await import('./processOwnership.js');
 const { reviewRoutes } = await import('./routes/reviews.js');
 const { setReviewerForTests } = await import('./reviewers/index.js');
 const { createOcrProvider } = await import('./secondOpinion/ocr.js');
 const { setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
-const { parseSecondOpinionState, pendingState } = await import('./secondOpinion/state.js');
+const { NO_SECOND_OPINION, parseSecondOpinionState, pendingState } = await import('./secondOpinion/state.js');
 
 function stubReviewer(name: ReviewerName): ReviewerDefinition {
   return {
@@ -74,6 +76,47 @@ test('recovery closes a second opinion its review never finished', async () => {
   assert.equal(store.getReview(none)!.second_opinion, null);
 });
 
+const stateOf = (id: number) => parseSecondOpinionState(store.getReview(id)!.second_opinion);
+
+async function settled(id: number, timeoutMs = 10_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = store.getReview(id)!.status;
+    if (status === 'done' || status === 'failed' || status === 'cancelled') return status;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return store.getReview(id)!.status;
+}
+
+test('a review that fails after its second opinion started closes the stage as failed', async () => {
+  const id = store.createReview({
+    repo: 'test-repo', branch: 'feat/fails', base_branch: 'main', status: 'queued',
+    second_opinion: JSON.stringify({ ...pendingState('ocr'), status: 'running', started_at: '2026-01-01T00:01:00.000Z' }),
+  }).id;
+  enqueueReview(id);
+  assert.equal(await settled(id), 'failed');
+  const state = stateOf(id)!;
+  assert.equal(state.status, 'failed');
+  assert.equal(state.error, 'the review failed');
+  assert.ok(state.finished_at);
+});
+
+test('shutdown closes the second opinion of a queued review with the reason', async () => {
+  // The child waits for a parent that never ends, so it stays queued until the shutdown.
+  const parent = store.createReview({ repo: 'test-repo', branch: 'feat/parent', base_branch: 'main', status: 'reviewing' }).id;
+  const child = store.createReview({
+    repo: 'test-repo', branch: 'feat/child', base_branch: 'feat/parent', status: 'queued', depends_on: parent,
+    second_opinion: JSON.stringify(pendingState('ocr')),
+  }).id;
+  enqueueReview(child);
+  assert.equal(store.getReview(child)!.status, 'queued');
+  await stopAllReviews('interrupted by shutdown', 100);
+  assert.equal(store.getReview(child)!.status, 'failed');
+  const state = stateOf(child)!;
+  assert.equal(state.status, 'skipped');
+  assert.equal(state.error, 'interrupted by shutdown');
+});
+
 test('a re-run keeps the previous provider, takes none when asked, and the default when none is stored', async () => {
   // Nothing re-run here is processed: the queue refuses new work once stopped.
   await stopAllReviews('test', 100);
@@ -98,9 +141,15 @@ test('a re-run keeps the previous provider, takes none when asked, and the defau
 
     const dropped = await rerun(withOcr, { secondOpinion: 'none' });
     assert.equal(dropped.second_opinion, null);
-    assert.equal(store.getReview(dropped.id)!.second_opinion, null);
+    // The explicit choice is kept as a marker, so the next re-run can follow it.
+    assert.equal(store.getReview(dropped.id)!.second_opinion, NO_SECOND_OPINION);
+    const stillNone = await rerun(dropped.id, {});
+    assert.equal(stillNone.second_opinion, null, 'none chosen stays none even with SECOND_OPINION=ocr');
+    assert.equal(store.getReview(stillNone.id)!.second_opinion, NO_SECOND_OPINION);
+    const reInherited = await rerun(inherited.id, {});
+    assert.equal(reInherited.second_opinion!.provider, 'ocr');
 
-    // A run stored without one (none chosen, or older than the stage) gets SECOND_OPINION.
+    // A row older than the stage (NULL) gets SECOND_OPINION.
     const plain = await rerun(prev(null), {});
     assert.equal(plain.second_opinion!.provider, 'ocr');
     const off = await rerun(prev(null), { secondOpinion: 'none' });

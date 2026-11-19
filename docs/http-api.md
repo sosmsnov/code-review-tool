@@ -18,7 +18,7 @@ authentication. Errors come back as `{ "error": "…" }` with a 4xx or 5xx statu
 | GET | `/api/reviews/:id` | | `{ review, requirements, findings, observations, changed_files, logs, comparison, links, ticket_group }`; `ticket_group` (null without a ticket) has the group key, this branch's parent, and the latest coverage with each requirement's `where` (`here`, `elsewhere`, `nowhere`) seen from this branch; `links` holds the GitHub URLs (`repo`, `branch`, `pr`, `compare`, `head`, `base`); `changed_files` is the changed set the anchor check used (`path`, `status`, `old_path`, `additions`, `deletions`); a finding has `corroborated` 1 when the second opinion reported it too |
 | GET | `/api/reviews/:id/report` | | the Markdown report (`text/markdown`) |
 | GET | `/api/reviews/:id/events` | | server-sent events: `status`, `log`, and `done` messages |
-| POST | `/api/reviews/:id/rerun` | `{ reviewer?, model?, secondOpinion? }` | `201 { review }`: a new run of the same branch; without `secondOpinion` it keeps the previous run's provider, and a run without one gets `SECOND_OPINION` |
+| POST | `/api/reviews/:id/rerun` | `{ reviewer?, model?, secondOpinion? }` | `201 { review }`: a new run of the same branch; without `secondOpinion` it keeps the previous run's choice (`none` included); a run older than the second opinion stage gets `SECOND_OPINION` |
 | POST | `/api/reviews/:id/cancel` | | `{ review }`; `409` when it is not queued or running |
 | DELETE | `/api/reviews/:id` | | `{ ok: true }`; deletes the row, the report file, and its raw pass outputs; 409 while the review is queued or running (cancel it first) |
 | GET | `/api/ticket-groups/:key` | `?run=` | `{ group, coverage, latest_coverage, coverage_pending, run }`: the chains per repository in stack order (each branch with `parent`, `parentReason`, `depth`, `latest` and `latestDone` run with `code_verdict`), the latest finished coverage, a newer running or failed pass, and the latest (or the given) ticket review run; `404` without a group |
@@ -49,7 +49,8 @@ branch has a verdict.
 
 Every route that returns a review row (`POST /api/reviews`, the re-run, the
 cancel, the ticket batch, `GET /api/reviews/:id`) serves `second_opinion`
-parsed: null when no second opinion was requested, else `{ provider, status
+parsed: null when the run has no second opinion (none chosen, or a run older
+than the stage), else `{ provider, status
 (pending | running | done | failed | skipped), requested_at, started_at,
 finished_at, elapsed_ms, model, tokens, files_reviewed, partial,
 comments_total, counts, comments, conclusion, primary_verdict,

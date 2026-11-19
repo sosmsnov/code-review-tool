@@ -38,7 +38,9 @@ import {
 } from '../ticketStore.js';
 import { activeChecklist, addUserRequirements, splitRequirementsText } from '../ticketRequirements.js';
 import { resolveSecondOpinion, type SecondOpinionName } from '../secondOpinion/index.js';
-import { parseSecondOpinionState, pendingState, summarizeSecondOpinion } from '../secondOpinion/state.js';
+import {
+  parseSecondOpinionState, storedChoice, storedSecondOpinionChoice, summarizeSecondOpinion,
+} from '../secondOpinion/state.js';
 import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
 import type { ProposedRequirement, RequirementRow, ResolvedTarget, ReviewRow, TicketInfo } from '../types.js';
 
@@ -125,7 +127,8 @@ export function startRun(
     reviewer: reviewer.name,
     model: model ?? reviewer.defaultModel,
     depends_on: opts.dependsOn ?? null,
-    second_opinion: opts.secondOpinion ? JSON.stringify(pendingState(opts.secondOpinion)) : null,
+    // undefined: the caller made no choice (NULL); null: none was chosen, stored as a marker.
+    second_opinion: opts.secondOpinion === undefined ? null : storedChoice(opts.secondOpinion),
   });
   enqueueReview(review.id);
   return review;
@@ -351,11 +354,12 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
           [target] = applyGroupBases(prev.group_key, [target]) as [ResolvedTarget];
         }
       }
-      // Without a choice, the re-run keeps the previous run's provider. A run without one stored
-      // (none chosen, or older than the stage) gets the env default, like a new review.
+      // Without a choice, the re-run keeps the previous run's choice, `none` included. Only a row
+      // older than the stage (NULL) gets the env default, like a new review.
+      const previous = storedSecondOpinionChoice(prev.second_opinion);
       const secondOpinion = resolveSecondOpinion(
         body.data.secondOpinion,
-        parseSecondOpinionState(prev.second_opinion)?.provider,
+        previous === 'none' ? null : previous,
       );
       review = startRun(target, ticket, choice.reviewer.name, choice.model, { secondOpinion });
     } catch (err) {

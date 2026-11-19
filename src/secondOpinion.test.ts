@@ -16,7 +16,9 @@ const {
 } = await import('./secondOpinion/conclusion.js');
 const { countsLine, formatElapsed, formatTokens } = await import('./secondOpinion/format.js');
 const { providerTimeoutMinutes } = await import('./secondOpinion/run.js');
-const { closeOpenState, parseSecondOpinionState, pendingState, summarizeSecondOpinion } = await import('./secondOpinion/state.js');
+const {
+  closeOpenState, NO_SECOND_OPINION, parseSecondOpinionState, pendingState, storedChoice, storedSecondOpinionChoice, summarizeSecondOpinion,
+} = await import('./secondOpinion/state.js');
 const { resolveSecondOpinion, setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
 const { liveReviewerGroups, normalize, runPass, ReviewGroupTracker } = await import('./reviewRunner.js');
 import type { ReviewerDefinition } from './reviewers/types.js';
@@ -91,9 +93,20 @@ test('ocr is called on the exact range with the files, the limits, and no provid
     '--max-tokens-budget', '800000', '--rule', '/d/rule.json', '--background-file', '/d/bg.md',
   ]);
   assert.ok(!args.includes('--provider') && !args.includes('--model'));
-  const env = createOcrProvider('/bin/true').buildChildEnv();
-  assert.equal(env.REVIEW_GH_TOKEN, undefined);
-  assert.equal(env.GITHUB_TOKEN, undefined);
+  const secrets = ['REVIEW_GH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'LINEAR_API_KEY', 'ANTHROPIC_API_KEY'];
+  const saved = Object.fromEntries(secrets.map((k) => [k, process.env[k]]));
+  try {
+    for (const k of secrets) process.env[k] = `fake-${k.toLowerCase()}`;
+    const env = createOcrProvider('/bin/true').buildChildEnv();
+    for (const k of secrets) assert.equal(env[k], undefined, `${k} must not reach the provider`);
+    assert.ok(Object.values(env).every((v) => !String(v).startsWith('fake-')));
+    assert.equal(env.PATH, process.env.PATH);
+  } finally {
+    for (const k of secrets) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
 });
 
 test('ocr output parses into comments, tokens, files and time', () => {
@@ -182,6 +195,15 @@ test('the stored state round-trips, summarises, and is closed when its review en
   assert.deepEqual(parseSecondOpinionState(JSON.stringify(pending)), pending);
   assert.equal(parseSecondOpinionState('not json'), null);
   assert.equal(parseSecondOpinionState(JSON.stringify({ provider: 'other' })), null);
+  // "None chosen" is a marker the re-run reads; everything else sees no stage.
+  assert.equal(storedChoice(null), NO_SECOND_OPINION);
+  assert.equal(parseSecondOpinionState(NO_SECOND_OPINION), null);
+  assert.equal(closeOpenState(parseSecondOpinionState(NO_SECOND_OPINION), 'x'), null);
+  assert.equal(summarizeSecondOpinion(parseSecondOpinionState(NO_SECOND_OPINION)), null);
+  assert.equal(storedSecondOpinionChoice(NO_SECOND_OPINION), 'none');
+  assert.equal(storedSecondOpinionChoice(storedChoice('ocr')), 'ocr');
+  assert.equal(storedSecondOpinionChoice(null), undefined);
+  assert.equal(storedSecondOpinionChoice('not json'), undefined);
   assert.deepEqual(summarizeSecondOpinion(pending), {
     provider: 'ocr', status: 'pending', comments_total: 0,
     counts: { confirmed: 0, duplicate: 0, observation: 0, rejected: 0, not_assessed: 0 },

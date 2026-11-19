@@ -261,6 +261,11 @@ export async function runSecondOpinion(ctx: SecondOpinionContext): Promise<Secon
     if (signal?.aborted) throw err;
     return fail(`second opinion ${name}`, (err as Error).message);
   } finally {
-    fs.rmSync(workDir, { recursive: true, force: true });
+    // Clean-up only: a leftover folder must never replace the result or fail the review.
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch (err) {
+      onLog('warn', `second opinion: could not remove ${workDir}: ${(err as Error).message}`);
+    }
   }
 }

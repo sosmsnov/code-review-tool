@@ -1233,3 +1233,23 @@ tr.group-runs > td {
   .checklist-item, .proposed-list li { flex-wrap: wrap; }
   .chain-item { padding-left: 0 !important; }
 }
+
+/* Second opinion */
+.tag.second-opinion { color: var(--violet); border-color: var(--violet); }
+.observation .tag.second-opinion { margin-bottom: var(--space-1); }
+.tag.corroborated { color: var(--green); border-color: var(--green); }
+.so-group { margin-top: var(--space-3); }
+.so-group > summary { cursor: pointer; }
+.so-comment {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  background: var(--bg-sunken);
+}
+.so-comment .loc-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-2); }
+.so-comment .loc { color: var(--accent); overflow-wrap: anywhere; }
+.so-comment p { overflow-wrap: anywhere; white-space: pre-wrap; }
+.so-comment p:last-child { margin-bottom: 0; }
+.so-conclusion { margin-top: var(--space-3); }
+.so-conclusion p:last-child { margin-bottom: 0; }

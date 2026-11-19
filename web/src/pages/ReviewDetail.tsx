@@ -19,10 +19,14 @@ import { ModelsRefresh } from '../components/ModelsRefresh';
 import { modelSourceText, noModelsNotice, pickModel, runBlocked } from '../modelChoice';
 import { Link, navigate } from '../router';
 import { attributionClass, attributionLinks, coverageStatusClass, coverageStatusLabel, ticketCoverageClass } from '../coverageView';
-import { cardCount, diffCounts, emptyNote, requirementsCount, shaPair } from '../runView';
+import {
+  cardCount, CONCLUSION_CHIP, deriveLensProgress, diffCounts, emptyNote, requirementsCount, SECOND_OPINION_CHIP, shaPair,
+  type LensProgress,
+} from '../runView';
 import { fmtClock } from '../time';
 import { openTicketLabel, openTicketTitle } from '../tickets';
 import type {
+  AssessmentVerdict,
   BranchCoverageLine,
   Finding,
   ProposedRequirement,
@@ -34,8 +38,11 @@ import type {
   RunComparison,
   ReviewTicketGroup,
   RowAttribution,
+  SecondOpinion,
+  SecondOpinionComment,
   Severity,
   SseEvent,
+  Verdict,
 } from '../types';
 
 const ACTIVE = new Set(['queued', 'fetching', 'reviewing']);
@@ -53,50 +60,6 @@ const CODE_BANNER: Record<string, [string, string]> = {
   changes_requested: ['CHANGES REQUESTED', 'fix the findings below'],
   blocked: ['BLOCKED', 'serious problems found'],
 };
-
-/** The lens passes the runner is expected to emit progress for, in display order. */
-const LENSES = ['correctness', 'security', 'tests', 'contracts', 'regressions'] as const;
-
-type LensState = 'pending' | 'running' | 'done' | 'failed';
-interface LensProgress {
-  name: string;
-  state: LensState;
-  note: string;
-}
-
-// Matches run-log lines such as `lens correctness: started` or
-// `lens correctness: 2 findings, 1 observation`.
-const LENS_RE = /^\s*lens\s+([a-z][\w-]*)\s*:\s*(.+?)\s*$/i;
-
-/**
- * Best-effort read of per-lens progress out of the run log. Returns null when the
- * log carries no recognisable lens lines, so the caller can fall back to the raw log.
- */
-function deriveLensProgress(logs: LogLine[]): LensProgress[] | null {
-  const seen = new Map<string, { state: LensState; note: string }>();
-  for (const line of logs) {
-    const match = LENS_RE.exec(String(line?.message ?? ''));
-    if (!match) continue;
-    const name = match[1]!.toLowerCase();
-    const rest = match[2]!;
-    const lower = rest.toLowerCase();
-    if (lower.startsWith('start')) seen.set(name, { state: 'running', note: '' });
-    else if (lower.includes('fail') || lower.includes('error')) seen.set(name, { state: 'failed', note: rest });
-    else seen.set(name, { state: 'done', note: rest });
-  }
-  if (seen.size === 0) return null;
-
-  const known: LensProgress[] = LENSES.map((name) => ({
-    name,
-    state: seen.get(name)?.state ?? 'pending',
-    note: seen.get(name)?.note ?? '',
-  }));
-  // An unexpected lens name still deserves a chip rather than being dropped.
-  const extra: LensProgress[] = [...seen.entries()]
-    .filter(([name]) => !(LENSES as readonly string[]).includes(name))
-    .map(([name, v]) => ({ name, ...v }));
-  return [...known, ...extra];
-}
 
 export default function ReviewDetail({ id }: { id: number }) {
   const [data, setData] = useState<ReviewDetailPayload | null>(null);
@@ -185,7 +148,9 @@ export default function ReviewDetail({ id }: { id: number }) {
     if (box) box.scrollTop = box.scrollHeight;
   }, [live.length]);
 
-  const lenses = useMemo(() => deriveLensProgress(live), [live]);
+  const secondOpinionStatus = data?.review.second_opinion?.status;
+  const expectSecondOpinion = secondOpinionStatus === 'pending' || secondOpinionStatus === 'running';
+  const lenses = useMemo(() => deriveLensProgress(live, expectSecondOpinion), [live, expectSecondOpinion]);
 
   if (error) return <p className="error-line">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
@@ -194,6 +159,7 @@ export default function ReviewDetail({ id }: { id: number }) {
   const group = data.ticket_group ?? null;
   const verdict = group ? review.code_verdict ?? review.verdict : review.verdict;
   const observations = data.observations ?? [];
+  const secondOpinion = review.second_opinion ?? null;
   const running = ACTIVE.has(review.status);
   const finished = review.status === 'done';
   const diff = diffCounts(review);
@@ -631,12 +597,16 @@ export default function ReviewDetail({ id }: { id: number }) {
                 {group.severity} · {group.items.length}
               </h3>
               {group.items.map((f) => (
-                <FindingCard key={f.id} finding={f} />
+                <FindingCard key={f.id} finding={f} secondOpinionProvider={secondOpinion?.provider ?? null} />
               ))}
             </div>
           ))
         )}
       </Card>
+
+      {secondOpinion && (
+        <SecondOpinionCard state={secondOpinion} findings={findings} verdict={review.verdict} running={running} />
+      )}
 
       <Card title={running ? 'Suggestions (non-blocking)' : `Suggestions (non-blocking) · ${observations.length}`}>
         {observations.length === 0 ? (
@@ -917,7 +887,9 @@ function LensChips({ lenses }: { lenses: LensProgress[] }) {
   return (
     <div className="lens-row" role="list" aria-label="Lens progress">
       {lenses.map((l) => {
-        const counts = l.state === 'done' ? lensCounts(l.note) : null;
+        // The stage chips carry their own wording ("2 confirmed, 1 observation"), not lens counts.
+        const stage = l.name === SECOND_OPINION_CHIP || l.name === CONCLUSION_CHIP;
+        const counts = l.state === 'done' && !stage ? lensCounts(l.note) : null;
         return (
           <span
             key={l.name}
@@ -951,6 +923,7 @@ function ObservationCard({ observation }: { observation: Observation }) {
   return (
     <article className="observation">
       {observation.lens === 'tool' && <ToolTag />}
+      {observation.lens === 'second_opinion' && <SecondOpinionTag />}
       {location && <div className="mono loc">{location}</div>}
       <p className="observation-note">{observation.note}</p>
       {observation.rationale && <p className="observation-why muted">{observation.rationale}</p>}
@@ -1005,12 +978,27 @@ function ToolTag() {
   );
 }
 
-function FindingCard({ finding }: { finding: Finding }) {
+/** Marks a confirmed comment of the second opinion: the review's reviewer checked it against the code. */
+function SecondOpinionTag() {
   return (
-    <article className={`finding sev-border-${finding.severity}`}>
+    <span className="tag second-opinion" title="Raised by the second opinion and confirmed against the code by the review's reviewer">
+      second opinion
+    </span>
+  );
+}
+
+function FindingCard({ finding, secondOpinionProvider }: { finding: Finding; secondOpinionProvider: string | null }) {
+  return (
+    <article id={`finding-${finding.ord}`} className={`finding sev-border-${finding.severity}`}>
       <header>
         <SeverityTag severity={finding.severity} />
         {finding.lens === 'tool' && <ToolTag />}
+        {finding.lens === 'second_opinion' && <SecondOpinionTag />}
+        {finding.corroborated ? (
+          <span className="tag corroborated" title="The second opinion reported the same defect">
+            also found by {secondOpinionProvider ?? 'the second opinion'}
+          </span>
+        ) : null}
         {finding.category && <span className="tag cat">{finding.category}</span>}
         <h4>{finding.title}</h4>
       </header>
@@ -1028,5 +1016,144 @@ function FindingCard({ finding }: { finding: Finding }) {
       )}
       {finding.snippet && <pre className="snippet">{finding.snippet}</pre>}
     </article>
+  );
+}
+
+const ASSESSMENT_GROUPS: { verdict: AssessmentVerdict; label: string; open: boolean }[] = [
+  { verdict: 'confirmed', label: 'Confirmed', open: true },
+  { verdict: 'duplicate', label: 'Already found by the review', open: true },
+  { verdict: 'observation', label: 'Observations', open: true },
+  { verdict: 'rejected', label: 'Rejected', open: false },
+  { verdict: 'not_assessed', label: 'Not assessed', open: false },
+];
+
+const SECOND_OPINION_STATUS: Record<string, string> = {
+  pending: 'waits for the review',
+  running: 'running',
+  done: 'done',
+  skipped: 'skipped',
+  failed: 'failed',
+};
+
+function fmtElapsedMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return '-';
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+function commentLocation(c: SecondOpinionComment): string {
+  const lines = c.end_line > c.start_line ? `${c.start_line}-${c.end_line}` : String(c.start_line);
+  return c.path ? `${c.path}:${lines}` : `line ${lines}`;
+}
+
+/** What the second opinion said, how each comment was judged, and what it changed. */
+function SecondOpinionCard({
+  state,
+  findings,
+  verdict,
+  running,
+}: {
+  state: SecondOpinion;
+  findings: Finding[];
+  verdict: Verdict | null;
+  running: boolean;
+}) {
+  const comments = state.comments ?? [];
+  const byOrd = new Map(findings.map((f) => [f.ord, f]));
+  const counts = state.counts;
+  const assessed = ASSESSMENT_GROUPS.map((g) => ({
+    ...g,
+    items: comments.filter((c) => (c.assessment?.verdict ?? 'not_assessed') === g.verdict),
+  })).filter((g) => g.items.length > 0);
+  const changed = state.status === 'done' && state.primary_verdict && verdict && state.primary_verdict !== verdict;
+  return (
+    <Card title={`Second opinion · ${state.provider}`}>
+      <dl className="meta">
+        <dt>Status</dt>
+        <dd>
+          {SECOND_OPINION_STATUS[state.status] ?? state.status}
+          {state.partial && <span className="muted"> · not every file was reviewed</span>}
+        </dd>
+        {state.model && (
+          <>
+            <dt>Model</dt>
+            <dd className="mono">{state.model}</dd>
+          </>
+        )}
+        <dt>Time</dt>
+        <dd className="mono">{fmtElapsedMs(state.elapsed_ms)}</dd>
+        {state.tokens && (
+          <>
+            <dt>Tokens</dt>
+            <dd className="mono">
+              {fmtTokens(state.tokens.total)}{' '}
+              <span className="muted">({fmtTokens(state.tokens.input)} in, {fmtTokens(state.tokens.output)} out)</span>
+            </dd>
+          </>
+        )}
+        <dt>Comments</dt>
+        <dd>
+          {state.comments_total === 0
+            ? state.status === 'done' ? 'none' : '-'
+            : `${state.comments_total}: ${counts.confirmed} confirmed, ${counts.duplicate} duplicate, ${counts.observation} observation, ${counts.rejected} rejected` +
+              (counts.not_assessed ? `, ${counts.not_assessed} not assessed` : '')}
+        </dd>
+      </dl>
+      {state.error && <p className="error-line">{state.error}</p>}
+      {running && comments.length === 0 && !state.error && (
+        <p className="muted">The second opinion runs after the review passes; its comments appear once it is done.</p>
+      )}
+      {assessed.map((g) => (
+        <details key={g.verdict} className="so-group" open={g.open}>
+          <summary className="group-head">
+            {g.label} · {g.items.length}
+          </summary>
+          {g.items.map((c, i) => {
+            const target = c.assessment?.finding_ord !== null && c.assessment?.finding_ord !== undefined
+              ? byOrd.get(c.assessment.finding_ord)
+              : undefined;
+            return (
+              <article key={`${g.verdict}-${i}`} className="so-comment">
+                <div className="loc-row">
+                  <span className="mono loc">{commentLocation(c)}</span>
+                  <span className="tag cat" title="The provider's own severity">{c.severity}</span>
+                  <span className="tag cat">{c.category}</span>
+                </div>
+                <p>{c.content}</p>
+                {c.assessment?.reason && (
+                  <p className="muted">
+                    <span className="label">Assessment:</span> {c.assessment.reason}
+                  </p>
+                )}
+                {target && (
+                  <p>
+                    <a href={`#finding-${target.ord}`}>
+                      {g.verdict === 'confirmed' ? 'Finding' : 'Same as finding'}: {target.title}
+                    </a>
+                  </p>
+                )}
+              </article>
+            );
+          })}
+        </details>
+      ))}
+      {state.conclusion && (
+        <div className="so-conclusion">
+          <h3 className="group-head">Conclusion</h3>
+          <p>{state.conclusion}</p>
+          {changed && (
+            <p className="muted">
+              Verdict: {state.primary_verdict} → {verdict}
+            </p>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }

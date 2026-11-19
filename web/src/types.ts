@@ -67,6 +67,54 @@ export interface Review {
   links?: RowLinks;
   /** What the run's ticket cell shows; list endpoints only, absent from older servers. */
   ticket_label?: TicketLabel | null;
+  /** The second opinion; null when none was requested. Lists carry the summary only (no comments). */
+  second_opinion?: SecondOpinion | null;
+}
+
+export type SecondOpinionStatus = 'pending' | 'skipped' | 'running' | 'done' | 'failed';
+export type AssessmentVerdict = 'confirmed' | 'duplicate' | 'observation' | 'rejected' | 'not_assessed';
+
+export interface SecondOpinionComment {
+  path: string;
+  start_line: number;
+  end_line: number;
+  /** The provider's own label. */
+  severity: string;
+  category: string;
+  content: string;
+  existing_code?: string;
+  suggestion_code?: string;
+  assessment: {
+    verdict: AssessmentVerdict;
+    reason: string;
+    duplicate_of: number | null;
+    /** The `ord` of the finding it became (confirmed) or repeats (duplicate). */
+    finding_ord: number | null;
+  } | null;
+}
+
+/** `review.second_opinion` as the detail endpoint serves it. */
+export interface SecondOpinion {
+  provider: string;
+  status: SecondOpinionStatus;
+  requested_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  elapsed_ms: number | null;
+  model?: string | null;
+  tokens?: { total: number; input: number; output: number } | null;
+  /** Lists: the total only. */
+  tokens_total?: number | null;
+  files_reviewed?: number | null;
+  partial?: boolean;
+  comments_total: number;
+  counts: Record<AssessmentVerdict, number>;
+  /** Detail only. */
+  comments?: SecondOpinionComment[];
+  conclusion?: string | null;
+  primary_verdict: Verdict | null;
+  primary_can_merge?: boolean | null;
+  error: string | null;
 }
 
 /** A run's ticket as best known; `key` is set when there is a ticket page to link to. */
@@ -144,6 +192,8 @@ export interface Finding {
   hunk?: string | null;
   anchor_status?: AnchorStatus;
   lens?: string | null;
+  /** 1 when the second opinion reported the same defect. */
+  corroborated?: number | null;
   ord: number;
 }
 
@@ -332,6 +382,12 @@ export interface ReviewerInfo {
 export interface ReviewersPayload {
   reviewers: ReviewerInfo[];
   defaultReviewer: string;
+  /** Absent from servers without the second opinion stage. */
+  second_opinion?: {
+    providers: { name: string; label: string; available: boolean; hint: string | null }[];
+    /** `none` or a provider name. */
+    default: string;
+  };
 }
 
 export interface PreviewsSummary {

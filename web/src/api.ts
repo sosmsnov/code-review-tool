@@ -67,6 +67,7 @@ export const api = {
     requirementsText?: string;
     includeWorkingTree?: boolean;
     baseBranch?: string;
+    secondOpinion?: string;
   }) =>
     req<{ reviews: Review[] }>('/api/reviews', { method: 'POST', body: JSON.stringify(body) }),
   listReviews: (params: Params = {}) =>
@@ -79,7 +80,7 @@ export const api = {
     if (!res.ok) throw new Error('Report is not available yet');
     return res.text();
   },
-  rerun: (id: number, overrides: { reviewer?: string; model?: string } = {}) =>
+  rerun: (id: number, overrides: { reviewer?: string; model?: string; secondOpinion?: string } = {}) =>
     req<{ review: Review }>(`/api/reviews/${id}/rerun`, {
       method: 'POST',
       body: JSON.stringify(overrides),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cardCount, diffCounts, emptyNote, requirementsCount, shaPair } from './runView';
+import { cardCount, deriveLensProgress, diffCounts, emptyNote, requirementsCount, shaPair } from './runView';
 import type { Review } from './types';
 
 const queued = { status: 'queued', head_sha: null, base_sha: null, files_changed: null, additions: null, deletions: null, requirements_met: null, requirements_total: null } as const;
@@ -53,4 +53,42 @@ test('a card counts only what a finished or ended run recorded', () => {
   assert.equal(cardCount('Findings', 0, 'reviewing'), 'Findings');
   assert.equal(cardCount('Findings', 0, 'done'), 'Findings (0)');
   assert.equal(cardCount('Findings', 3, 'failed'), 'Findings (3)');
+});
+
+test('lens chips come from the lens lines; the second opinion and its conclusion get their own chips', () => {
+  const log = (...messages: string[]) => messages.map((message) => ({ message }));
+  assert.equal(deriveLensProgress(log('Queued.', 'second opinion ocr: started')), null);
+
+  const primaryOnly = deriveLensProgress(log('lens correctness: started', 'lens security: 1 finding, 0 observations'))!;
+  assert.deepEqual(primaryOnly.map((c) => c.name), ['correctness', 'security', 'tests', 'contracts', 'regressions']);
+  assert.equal(primaryOnly[0]!.state, 'running');
+  assert.equal(primaryOnly[1]!.state, 'done');
+
+  const expected = deriveLensProgress(log('lens correctness: started'), true)!;
+  assert.deepEqual(expected.slice(-2).map((c) => [c.name, c.state]), [['second opinion', 'pending'], ['conclusion', 'pending']]);
+
+  const running = deriveLensProgress(log(
+    'lens correctness: 0 findings, 0 observations',
+    'second opinion ocr: started',
+    'second opinion: 9 file(s) changed, reviewing 9',
+  ), true)!;
+  assert.deepEqual(running.slice(-2).map((c) => [c.name, c.state]), [['second opinion', 'running'], ['conclusion', 'pending']]);
+
+  const done = deriveLensProgress(log(
+    'lens correctness: 0 findings, 0 observations',
+    'second opinion ocr: started',
+    'second opinion ocr: 7 comments, 9 files, 245k tokens, 3m12s',
+    'conclusion: started',
+    'conclusion: 2 confirmed, 1 duplicate, 1 observation, 3 rejected',
+  ))!;
+  assert.deepEqual(done.slice(-2), [
+    { name: 'second opinion', state: 'done', note: '7 comments, 9 files, 245k tokens, 3m12s' },
+    { name: 'conclusion', state: 'done', note: '2 confirmed, 1 duplicate, 1 observation, 3 rejected' },
+  ]);
+
+  const failed = deriveLensProgress(log('lens tests: 0 findings, 0 observations', 'second opinion ocr: failed (ocr exited with code 2)'), true)!;
+  assert.deepEqual(failed.slice(-1).map((c) => [c.name, c.state]), [['second opinion', 'failed']]);
+
+  const empty = deriveLensProgress(log('lens tests: 0 findings, 0 observations', 'second opinion ocr: 0 comments, 3 files, 12k tokens, 40s'), true)!;
+  assert.deepEqual(empty.slice(-1).map((c) => [c.name, c.state]), [['second opinion', 'done']]);
 });

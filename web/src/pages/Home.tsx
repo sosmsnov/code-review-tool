@@ -36,6 +36,9 @@ export default function Home() {
   const [reviewers, setReviewers] = useState<ReviewerInfo[]>([]);
   const [reviewer, setReviewer] = useState('claude');
   const [model, setModel] = useState('');
+  // `none` or a provider name; the server default once the reviewers load.
+  const [secondOpinion, setSecondOpinion] = useState('none');
+  const [secondOpinionProviders, setSecondOpinionProviders] = useState<{ name: string; label: string }[]>([]);
   const [requirements, setRequirements] = useState('');
   const [manualOpen, setManualOpen] = useState(false);
   const [mode, setMode] = useState<Mode>(() => (readStored(MODE_KEY) === 'local' ? 'local' : 'github'));
@@ -203,9 +206,14 @@ export default function Home() {
   useEffect(() => {
     api
       .reviewers()
-      .then(({ reviewers: list, defaultReviewer }) => {
+      .then(({ reviewers: list, defaultReviewer, second_opinion: secondOpinionInfo }) => {
         const all = list ?? [];
         setReviewers(all);
+        // Only installed providers are offered; the default applies only when it is one of them.
+        const providers = (secondOpinionInfo?.providers ?? []).filter((p) => p.available);
+        setSecondOpinionProviders(providers);
+        const fallback = secondOpinionInfo?.default ?? 'none';
+        setSecondOpinion(providers.some((p) => p.name === fallback) ? fallback : 'none');
 
         // A remembered reviewer only counts while the server still offers it and its CLI is installed.
         const remembered = readStored(REVIEWER_KEY);
@@ -288,6 +296,7 @@ export default function Home() {
         ...(model.trim() ? { model: model.trim() } : {}),
         ...(mode === 'local' && includeWorkingTree ? { includeWorkingTree: true } : {}),
         ...(mode === 'local' && localBase.trim() ? { baseBranch: localBase.trim() } : {}),
+        ...(secondOpinionProviders.length ? { secondOpinion } : {}),
       });
       if (reviews.length === 1) navigate(`/review/${reviews[0]!.id}`);
       else if (reviews[0]?.ticket_key) navigate(`/ticket/${encodeURIComponent(reviews[0].ticket_key)}`);
@@ -470,6 +479,18 @@ export default function Home() {
           </datalist>
         </Field>
         <ModelsRefresh onRefreshed={onModelsRefreshed} />
+        {secondOpinionProviders.length > 0 && (
+          <Field label="Second opinion">
+            <Select value={secondOpinion} onChange={(e) => setSecondOpinion(e.target.value)}>
+              <option value="none">None</option>
+              {secondOpinionProviders.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
       </Toolbar>
       {modelNotice && <p className="muted manual-hint">{modelNotice}</p>}
       {!modelNotice && modelSource && <p className="muted manual-hint">{modelSource}</p>}

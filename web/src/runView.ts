@@ -54,3 +54,77 @@ export function emptyNote(what: 'findings' | 'requirements', status: ReviewStatu
 export function cardCount(label: string, count: number, status: ReviewStatus): string {
   return isActive(status) ? label : `${label} (${count})`;
 }
+
+/** The lens passes the runner is expected to emit progress for, in display order. */
+const LENSES = ['correctness', 'security', 'tests', 'contracts', 'regressions'] as const;
+
+export type LensState = 'pending' | 'running' | 'done' | 'failed';
+export interface LensProgress {
+  name: string;
+  state: LensState;
+  note: string;
+}
+
+// Run-log lines such as `lens correctness: started` or `lens correctness: 2 findings, 1 observation`.
+const LENS_RE = /^\s*lens\s+([a-z][\w-]*)\s*:\s*(.+?)\s*$/i;
+// `second opinion ocr: started`, `second opinion ocr: 7 comments, ...`; the provider's own
+// progress (`second opinion: ...`) names no provider and is not a stage line.
+const SECOND_OPINION_RE = /^\s*second opinion\s+([a-z][\w-]*)\s*:\s*(.+?)\s*$/i;
+const CONCLUSION_RE = /^\s*conclusion\s*:\s*(.+?)\s*$/i;
+
+export const SECOND_OPINION_CHIP = 'second opinion';
+export const CONCLUSION_CHIP = 'conclusion';
+
+function stageState(rest: string): { state: LensState; note: string } {
+  const lower = rest.toLowerCase();
+  if (lower.startsWith('start')) return { state: 'running', note: '' };
+  if (lower.includes('fail') || lower.includes('error')) return { state: 'failed', note: rest };
+  return { state: 'done', note: rest };
+}
+
+/**
+ * Best-effort read of per-lens progress out of the run log, plus the second
+ * opinion and its conclusion. Returns null when the log carries no recognisable
+ * lens lines, so the caller can fall back to the raw log. `expectSecondOpinion`:
+ * the run has a second opinion still to come, so its chips show as pending.
+ */
+export function deriveLensProgress(logs: readonly { message?: string | null }[], expectSecondOpinion = false): LensProgress[] | null {
+  const seen = new Map<string, { state: LensState; note: string }>();
+  const stages = new Map<string, { state: LensState; note: string }>();
+  for (const line of logs) {
+    const message = String(line?.message ?? '');
+    const lens = LENS_RE.exec(message);
+    if (lens) {
+      seen.set(lens[1]!.toLowerCase(), stageState(lens[2]!));
+      continue;
+    }
+    const second = SECOND_OPINION_RE.exec(message);
+    if (second) {
+      stages.set(SECOND_OPINION_CHIP, stageState(second[2]!));
+      continue;
+    }
+    const conclusion = CONCLUSION_RE.exec(message);
+    if (conclusion) stages.set(CONCLUSION_CHIP, stageState(conclusion[1]!));
+  }
+  if (seen.size === 0) return null;
+
+  const known: LensProgress[] = LENSES.map((name) => ({
+    name,
+    state: seen.get(name)?.state ?? 'pending',
+    note: seen.get(name)?.note ?? '',
+  }));
+  // An unexpected lens name still deserves a chip rather than being dropped.
+  const extra: LensProgress[] = [...seen.entries()]
+    .filter(([name]) => !(LENSES as readonly string[]).includes(name))
+    .map(([name, v]) => ({ name, ...v }));
+
+  const after: LensProgress[] = [];
+  const second = stages.get(SECOND_OPINION_CHIP);
+  if (second || expectSecondOpinion) after.push({ name: SECOND_OPINION_CHIP, ...(second ?? { state: 'pending', note: '' }) });
+  const conclusion = stages.get(CONCLUSION_CHIP);
+  // No comments, no conclusion pass; a failed or skipped provider has none either.
+  const noConclusion = second && (second.state === 'failed' || /^(0 comments|skipped)/i.test(second.note));
+  if (conclusion) after.push({ name: CONCLUSION_CHIP, ...conclusion });
+  else if ((second || expectSecondOpinion) && !noConclusion) after.push({ name: CONCLUSION_CHIP, state: 'pending', note: '' });
+  return [...known, ...extra, ...after];
+}

@@ -90,7 +90,15 @@ test('the meter sums processes per pass and totals over passes; a pass without u
   assert.equal(sumTotals([]).cost_usd, null);
 });
 
-test('the second opinion counts its input as written to the cache', () => {
+test('the second opinion takes reported cache tokens out of its input', () => {
+  assert.deepEqual(
+    secondOpinionUsage({ total: 1_000, input: 900, output: 100, cache_read: 300, cache_write: 500 }, 'm'),
+    u({ input: 100, cache_read: 300, cache_write: 500, output: 100, model: 'm' }),
+  );
+  assert.deepEqual(secondOpinionUsage({ total: 100, input: 50, output: 50, cache_read: 40, cache_write: 40 }), u({ cache_read: 40, cache_write: 40, output: 50 }));
+});
+
+test('without reported cache numbers the second opinion counts its input as written to the cache', () => {
   assert.deepEqual(secondOpinionUsage({ total: 1_000, input: 900, output: 100 }, 'm'), u({ cache_write: 900, output: 100, model: 'm' }));
   assert.deepEqual(secondOpinionUsage({ total: 1_000, input: 0, output: 100 }), u({ cache_write: 900, output: 100 }));
 });

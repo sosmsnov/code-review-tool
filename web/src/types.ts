@@ -151,7 +151,7 @@ export interface SecondOpinion {
   finished_at?: string | null;
   elapsed_ms: number | null;
   model?: string | null;
-  tokens?: { total: number; input: number; output: number } | null;
+  tokens?: { total: number; input: number; output: number; cache_read?: number; cache_write?: number } | null;
   /** Lists: the total only. */
   tokens_total?: number | null;
   files_reviewed?: number | null;

@@ -229,7 +229,7 @@ test('a second opinion runs after the review, its comments are assessed, and con
     ['src/orders/service.test.ts', 'duplicate', 0],
   ]);
   assert.equal(state.conclusion, 'One real defect the review missed.');
-  assert.deepEqual(state.tokens, { total: 244534, input: 231465, output: 13069 });
+  assert.deepEqual(state.tokens, { total: 244534, input: 231465, output: 13069, cache_read: 58970, cache_write: 172463 });
   assert.equal(state.model, 'example-model');
   assert.deepEqual(states.map((s) => s.status), ['running', 'running', 'done']);
   assert.equal(states[0]!.requested_at, '2026-01-01T00:00:00.000Z');

@@ -123,9 +123,13 @@ export function parseOcrOutput(text: string): SecondOpinionResult {
   const total = int(summary.total_tokens);
   const input = int(summary.input_tokens);
   const output = int(summary.output_tokens);
+  const cacheRead = int(summary.cache_read_tokens);
+  const cacheWrite = int(summary.cache_write_tokens);
   const tokens: SecondOpinionTokens | undefined = total !== undefined || input !== undefined || output !== undefined
     ? { total: total ?? (input ?? 0) + (output ?? 0), input: input ?? 0, output: output ?? 0 }
     : undefined;
+  if (tokens && cacheRead !== undefined) tokens.cache_read = cacheRead;
+  if (tokens && cacheWrite !== undefined) tokens.cache_write = cacheWrite;
   const status = str(root.status);
   const failed = Array.isArray(coverage.failed) ? coverage.failed.length : 0;
 

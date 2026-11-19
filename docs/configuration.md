@@ -161,8 +161,9 @@ pass and in total, and the log ends with
 `usage: 9.4M read, 800k written, 110k out, weighted 2.1M, 8 processes`
 ("read" is uncached input plus cache reads, "written" is cache writes). The
 weighted total is `input + cache_write * 1.25 + cache_read * 0.1 + output * 5`
-(`USAGE_WEIGHTS`). The second opinion reports only input and output tokens; its
-input is counted as cache writes.
+(`USAGE_WEIGHTS`). The second opinion's cache numbers are used when
+its provider reports them (cached tokens are taken out of its input); otherwise
+its whole input is counted as cache writes.
 
 With `USAGE_BUDGET_WEIGHTED` set, `GET /api/usage` sums the reviews and
 coverage passes that finished in the last `USAGE_WINDOW_HOURS`; running ones

@@ -124,7 +124,7 @@ test('ocr output parses into comments, tokens, files and time', () => {
   });
   assert.equal(result.comments[1]!.suggestion_code?.startsWith('it('), true);
   assert.equal(result.files_reviewed, 4);
-  assert.deepEqual(result.tokens, { total: 244534, input: 231465, output: 13069 });
+  assert.deepEqual(result.tokens, { total: 244534, input: 231465, output: 13069, cache_read: 58970, cache_write: 172463 });
   assert.equal(result.elapsed_ms, 191537);
   assert.equal(result.model, 'example-model');
   assert.equal(result.partial, false);

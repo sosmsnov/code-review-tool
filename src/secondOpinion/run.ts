@@ -82,13 +82,19 @@ export function providerLine(result: SecondOpinionResult, elapsedMs: number): st
 }
 
 /**
- * The provider reports only input and output tokens, so its whole input is
- * counted as written to the cache: an upper bound that keeps it comparable
- * with the reviewer passes, whose fresh prompts are cache writes.
+ * The provider counts cached tokens inside its input, so they are taken out of
+ * `input`. When it reports no cache numbers, its whole input is counted as
+ * written to the cache: an upper bound that keeps it comparable with the
+ * reviewer passes, whose fresh prompts are cache writes.
  */
 export function secondOpinionUsage(tokens: SecondOpinionTokens, model?: string): PassUsage {
   const output = tokens.output || 0;
   const input = tokens.input || Math.max(0, (tokens.total || 0) - output);
+  if (tokens.cache_read !== undefined || tokens.cache_write !== undefined) {
+    const cache_read = tokens.cache_read ?? 0;
+    const cache_write = tokens.cache_write ?? 0;
+    return { input: Math.max(0, input - cache_read - cache_write), cache_read, cache_write, output, cost_usd: null, model: model ?? null };
+  }
   return { input: 0, cache_read: 0, cache_write: input, output, cost_usd: null, model: model ?? null };
 }
 

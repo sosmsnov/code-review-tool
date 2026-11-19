@@ -1121,7 +1121,11 @@ function SecondOpinionCard({
             <dt>Tokens</dt>
             <dd className="mono">
               {fmtTokens(state.tokens.total)}{' '}
-              <span className="muted">({fmtTokens(state.tokens.input)} in, {fmtTokens(state.tokens.output)} out)</span>
+              <span className="muted">
+                ({state.tokens.cache_read !== undefined || state.tokens.cache_write !== undefined
+                  ? `${fmtTokens(state.tokens.cache_read ?? 0)} read, ${fmtTokens(state.tokens.cache_write ?? 0)} written`
+                  : `${fmtTokens(state.tokens.input)} in`}, {fmtTokens(state.tokens.output)} out)
+              </span>
             </dd>
           </>
         )}

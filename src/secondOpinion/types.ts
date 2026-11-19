@@ -41,6 +41,9 @@ export interface SecondOpinionTokens {
   total: number;
   input: number;
   output: number;
+  /** Cached tokens, counted inside `input` by the provider; absent when it does not report them. */
+  cache_read?: number;
+  cache_write?: number;
 }
 
 export interface SecondOpinionResult {

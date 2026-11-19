@@ -27,6 +27,9 @@ import { buildCheckContext } from './checks/sources.js';
 import { coverageSchedulingEnabled, onGroupReviewSettled } from './coverage.js';
 import { sliceContext } from './ticketGroups.js';
 import { getTicketGroup, isTicketGroupKey } from './ticketStore.js';
+import { getSecondOpinionProvider } from './secondOpinion/index.js';
+import type { SecondOpinionRequest } from './secondOpinion/run.js';
+import { closeOpenState, parseSecondOpinionState } from './secondOpinion/state.js';
 import type {
   LogLevel,
   ResolvedTarget,
@@ -85,6 +88,7 @@ export function cancelReview(reviewId: number): boolean {
     finishRow(reviewId, { status: 'cancelled', finished_at: nowIso() });
     log(reviewId, 'warn', 'Cancelled before it started.');
     status(reviewId, 'cancelled');
+    closeSecondOpinion(reviewId, 'cancelled');
     settleGroup(reviewId);
     // Children waiting for it may start now.
     spawnWorkers();
@@ -176,6 +180,7 @@ export async function recoverInterrupted(
         : 'Interrupted by restart.',
     );
     status(review.id, 'failed');
+    closeSecondOpinion(review.id, 'interrupted by restart', review.second_opinion);
     failed.push(review.id);
 
     const left = parseRecordedGroups(review.reviewer_pgids)
@@ -207,12 +212,14 @@ export async function stopAllReviews(reason: string, graceMs = 3_000): Promise<v
     finishRow(reviewId, { status: 'failed', error: reason, finished_at: at });
     log(reviewId, 'error', `Interrupted before it started: ${reason}.`);
     status(reviewId, 'failed');
+    closeSecondOpinion(reviewId, reason);
   }
   for (const reviewId of running.keys()) {
     interrupted.add(reviewId);
     finishRow(reviewId, { status: 'failed', error: reason, finished_at: at });
     log(reviewId, 'error', `Interrupted: ${reason}.`);
     status(reviewId, 'failed');
+    closeSecondOpinion(reviewId, reason);
   }
   // SIGTERM goes out synchronously here, before the aborts below: once the
   // runner is stopping, an abort no longer SIGKILLs on its own.
@@ -368,6 +375,8 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
     log(reviewId, 'info', `Carrying ${previousFindings.length} open finding(s) from the previous run.`);
   }
 
+  const secondOpinion = secondOpinionRequest(reviewId, review, slice);
+
   const checkContext = await buildCheckContext(
     review,
     checkout,
@@ -389,6 +398,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
       ...(slice ? { slice } : {}),
       checkContext,
       ...(checklist ? { checklist } : {}),
+      ...(secondOpinion ? { secondOpinion } : {}),
     },
   );
   throwIfCancelled(signal);
@@ -405,6 +415,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
     lenses: output.lensResults,
     synthesis: output.synthesisRaw,
     reanchor: output.reanchorRaw,
+    ...(output.secondOpinionRaw ? { secondOpinion: output.secondOpinionRaw } : {}),
   }, slice ? { ticketKey: slice.ticketKey } : undefined);
   log(reviewId, 'info', `Report written to ${reportPath}`);
 
@@ -422,6 +433,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
     ).length,
     report_path: reportPath,
     proposed_requirements: output.proposed_requirements?.length ? JSON.stringify(output.proposed_requirements) : null,
+    ...(output.second_opinion ? { second_opinion: JSON.stringify(output.second_opinion) } : {}),
     finished_at: nowIso(),
     error: null,
   });
@@ -465,7 +477,31 @@ function handleFailure(reviewId: number, err: unknown): void {
   });
   log(reviewId, 'error', cancelled ? 'Cancelled.' : `Failed: ${message}`);
   status(reviewId, finalStatus);
+  closeSecondOpinion(reviewId, cancelled ? 'cancelled' : 'the review failed');
   settleGroup(reviewId);
+}
+
+/** The second opinion stored at creation, as the runner takes it; undefined when none was requested. */
+function secondOpinionRequest(reviewId: number, review: ReviewRow, slice: SliceInfo | undefined): SecondOpinionRequest | undefined {
+  const state = parseSecondOpinionState(review.second_opinion);
+  if (!state) return undefined;
+  return {
+    provider: getSecondOpinionProvider(state.provider),
+    requestedAt: state.requested_at,
+    onUpdate: (next) => finishRow(reviewId, { second_opinion: JSON.stringify(next) }),
+    requirementsText: slice ? getTicketGroup(slice.ticketKey)?.requirements_text ?? null : null,
+  };
+}
+
+/** A second opinion its review never got to (failed, cancelled, interrupted) must not stay pending or running. */
+function closeSecondOpinion(reviewId: number, reason: string, stored?: string | null): void {
+  try {
+    const json = stored !== undefined ? stored : getReview(reviewId)?.second_opinion;
+    const closed = closeOpenState(parseSecondOpinionState(json), reason);
+    if (closed) updateReview(reviewId, { second_opinion: JSON.stringify(closed) });
+  } catch {
+    // Bookkeeping must never break the pipeline.
+  }
 }
 
 /** A settled run of a ticket group may be the last one of a batch: coverage is (re)scheduled. */

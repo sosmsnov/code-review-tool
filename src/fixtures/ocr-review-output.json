@@ -1,0 +1,95 @@
+{
+  "status": "complete",
+  "llm": { "provider": "example-provider", "model": "example-model" },
+  "message": "Review complete: 3 finding(s) across 4 selected item(s).",
+  "summary": {
+    "files_reviewed": 4,
+    "comments": 3,
+    "total_tokens": 244534,
+    "input_tokens": 231465,
+    "output_tokens": 13069,
+    "cache_read_tokens": 58970,
+    "cache_write_tokens": 172463,
+    "elapsed": "3m12s"
+  },
+  "tool_calls": {
+    "total": 12,
+    "by_tool": { "code_comment": 3, "code_search": 5, "file_read": 3, "file_read_diff": 1 },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "src/orders/service.ts",
+      "content": "The discount is applied twice when the order already has a coupon.",
+      "existing_code": "total = applyDiscount(applyDiscount(total, coupon), coupon);",
+      "start_line": 42,
+      "end_line": 44,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/orders/service.test.ts",
+      "content": "The new branch for empty carts has no test.",
+      "suggestion_code": "it('rejects an empty cart', () => { expect(() => checkout([])).toThrow(); });",
+      "start_line": 10,
+      "end_line": 10,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "docs/orders.md",
+      "content": "The documentation still describes the old rounding rule.",
+      "existing_code": "Totals are rounded down.",
+      "start_line": 7,
+      "end_line": 7,
+      "category": "documentation",
+      "severity": "high"
+    }
+  ],
+  "groups": [
+    { "label": "orders", "files": ["src/orders/service.ts", "src/orders/service.test.ts"] }
+  ],
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "manifest": {
+    "schema_version": "1",
+    "run_id": "example-run",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": { "identity_sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+    "input": {
+      "mode": "range",
+      "requested_from": "1111111111111111111111111111111111111111",
+      "requested_head": "2222222222222222222222222222222222222222",
+      "resolved_base": "1111111111111111111111111111111111111111",
+      "resolved_head": "2222222222222222222222222222222222222222",
+      "exact_range": "1111111..2222222",
+      "source_artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "execution": {
+      "ocr_version": "0.0.0",
+      "provider": "example-provider",
+      "model": "example-model",
+      "configured_concurrency": 3,
+      "max_tool_request_times": 100,
+      "rule_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "runtime_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "coverage": {
+      "selected": [
+        { "item_id": "a", "path": "src/orders/service.ts", "fingerprint": "f1" },
+        { "item_id": "b", "path": "src/orders/service.test.ts", "fingerprint": "f2" }
+      ],
+      "completed": [
+        { "item_id": "a", "path": "src/orders/service.ts", "fingerprint": "f1" },
+        { "item_id": "b", "path": "src/orders/service.test.ts", "fingerprint": "f2" }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": [],
+      "excluded": []
+    },
+    "elapsed_ms": 191537
+  }
+}

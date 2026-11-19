@@ -34,7 +34,7 @@ function reviewRow(overrides: Partial<ReviewRow> = {}): ReviewRow {
     files_changed: null, additions: null, deletions: null, created_at: '2026-01-01T00:00:00.000Z',
     started_at: null, finished_at: null, group_key: 'ABC-123',
     runner_pid: null, runner_started_at: null, reviewer_pgids: null, code_verdict: null, code_can_merge: null, depends_on: null,
-    proposed_requirements: null,
+    proposed_requirements: null, second_opinion: null,
     ...overrides,
   };
 }
@@ -43,7 +43,7 @@ function finding(i: number, severity: FindingRow['severity'], overrides: Partial
   return {
     id: i, review_id: 1, severity, category: 'correctness', file: `src/f${i}.ts`, line: i, end_line: null,
     title: `Finding ${i}`, problem: `Problem ${i}`, why: null, suggestion: null, snippet: null,
-    kind: 'diff', cause_file: null, cause_line: null, hunk: null, anchor_status: 'ok', lens: null, ord: i,
+    kind: 'diff', cause_file: null, cause_line: null, hunk: null, anchor_status: 'ok', lens: null, corroborated: null, ord: i,
     ...overrides,
   };
 }

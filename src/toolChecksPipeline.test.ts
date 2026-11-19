@@ -137,7 +137,7 @@ test('tool findings reach synthesis, are appended by the tool, and decide the ve
   assert.match(suggestions, /Model remark\./);
   assert.doesNotMatch(suggestions, /diff-size/);
 
-  const rows = out.findings.map((f, i) => ({ ...f, id: i + 1, review_id: 1, ord: i, anchor_status: f.anchor_status ?? 'unverified' })) as FindingRow[];
+  const rows = out.findings.map((f, i) => ({ ...f, id: i + 1, review_id: 1, ord: i, anchor_status: f.anchor_status ?? 'unverified', corroborated: null })) as FindingRow[];
   assert.equal(compactFindings(rows).findings[0]!.lens, 'tool');
 });
 

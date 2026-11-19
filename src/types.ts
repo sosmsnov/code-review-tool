@@ -1,3 +1,5 @@
+import type { SecondOpinionState } from './secondOpinion/types.js';
+
 export type ReviewStatus = 'queued' | 'fetching' | 'reviewing' | 'done' | 'failed' | 'cancelled';
 export type Verdict = 'approve' | 'changes_requested' | 'blocked';
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit';
@@ -6,8 +8,13 @@ export type RequirementStatus = 'met' | 'partial' | 'missing' | 'not_verifiable'
 /** The independent review passes that run before synthesis. */
 export const LENS_NAMES = ['correctness', 'security', 'tests', 'contracts', 'regressions'] as const;
 export type LensName = (typeof LENS_NAMES)[number];
-/** Where a finding came from: a lens, or `tool` for a deterministic tool check (src/checks). */
-export type FindingSource = LensName | 'tool';
+/**
+ * Where a finding came from: a lens, `tool` for a deterministic tool check
+ * (src/checks), or `second_opinion` for a confirmed comment of the second opinion.
+ */
+export type FindingSource = LensName | 'tool' | 'second_opinion';
+/** Where an observation came from, when it is not the model's own remark. */
+export type ObservationSource = 'tool' | 'second_opinion';
 
 export interface TicketInfo {
   /** Which tracker produced this ticket, or 'manual' for pasted requirements. */
@@ -85,8 +92,8 @@ export interface Observation {
   line: number | null;
   note: string;
   rationale: string;
-  /** `tool` for a deterministic tool check; absent or null for the model's remarks. */
-  lens?: 'tool' | null;
+  /** `tool` for a deterministic tool check, `second_opinion` for the second opinion; absent or null otherwise. */
+  lens?: ObservationSource | null;
 }
 
 export interface Finding {
@@ -110,6 +117,8 @@ export interface Finding {
   lens: FindingSource | null;
   /** Set by anchor validation after synthesis; lens output carries none. */
   anchor_status?: AnchorStatus;
+  /** True when the second opinion reported the same defect. */
+  corroborated?: boolean;
 }
 
 /** The exact JSON one lens pass must return: candidates, not verdicts. */
@@ -132,6 +141,8 @@ export interface ReviewOutput {
   conclusion: string;
   /** Additions to the ticket's stored checklist that the synthesis pass suggests; never stored on the ticket by itself. */
   proposed_requirements?: ProposedRequirement[];
+  /** Set by the runner when the review had a second opinion. */
+  second_opinion?: SecondOpinionState | null;
 }
 
 /** A requirement a review suggests adding to the ticket's checklist. */
@@ -205,6 +216,8 @@ export interface ReviewRow {
   depends_on: number | null;
   /** JSON array of `ProposedRequirement` from the synthesis pass; NULL when it proposed nothing or on older rows. */
   proposed_requirements: string | null;
+  /** JSON `SecondOpinionState`; NULL when no second opinion was requested, and on older rows. */
+  second_opinion: string | null;
 }
 
 /** `active`: a run is queued/fetching/reviewing; `failed`: some branch's latest run failed; `done`: see db.ts. */
@@ -268,6 +281,8 @@ export interface FindingRow {
   /** 'unverified' on rows written before anchor validation existed. */
   anchor_status: AnchorStatus;
   lens: FindingSource | null;
+  /** 1 when the second opinion reported the same defect; null otherwise and on older rows. */
+  corroborated: number | null;
   ord: number;
 }
 
@@ -285,8 +300,8 @@ export interface ObservationRow {
   line: number | null;
   note: string;
   rationale: string | null;
-  /** `tool` for a deterministic tool check; null for the model's remarks and older rows. */
-  lens: 'tool' | null;
+  /** `tool` for a deterministic tool check, `second_opinion` for the second opinion; null otherwise and on older rows. */
+  lens: ObservationSource | null;
   ord: number;
 }
 

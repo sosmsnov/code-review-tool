@@ -1,0 +1,14 @@
+[ocr] 4 file(s) changed, reviewing 4 in /tmp/checkout
+[ocr] estimated cost: ~4 file(s), est. 80K input + 20K output ≈ 100K total tokens (rough; agent tool-use inflates this - actual reported after run)
+[ocr] token budget: 800K (dispatch stops once exceeded)
+[ocr] Skipping plan phase for group "src/orders/service.ts" (1 file(s), max 21 lines, total 21 lines)
+[ocr]   ▶ code_search search_text=applyDiscount file_patterns=[src/]
+[ocr]   ✔ code_search (60ms)
+[ocr]   ▶ file_read_diff
+[ocr]   ✔ file_read_diff (0s)
+[ocr] Plan completed for group "src/orders/service.ts"
+[ocr]   ▶ code_comment
+[ocr]   ✔ code_comment (0s)
+[ocr] Round 2/2 added no new findings for group "src/orders/service.ts"; stopping early
+[ocr] Results written to /tmp/second-opinion/output.json
+Review complete: 3 finding(s) across 4 selected item(s).

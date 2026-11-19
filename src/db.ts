@@ -243,6 +243,9 @@ export function migrate(): void {
     );
     // The cross-repository contract check of a coverage pass; NULL on older rows (not checked).
     ensureColumn('ticket_coverage', 'contract_json', `ALTER TABLE ticket_coverage ADD COLUMN contract_json TEXT`);
+    // The second opinion stage (JSON) and the primary findings it corroborated; NULL when it did not run.
+    ensureColumn('reviews', 'second_opinion', `ALTER TABLE reviews ADD COLUMN second_opinion TEXT`);
+    ensureColumn('findings', 'corroborated', `ALTER TABLE findings ADD COLUMN corroborated INTEGER`);
     // After ensureColumn: on an older database the column only exists from here on.
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_reviews_group ON reviews(group_key, created_at)`).run();
     syncGroupKeys();
@@ -288,7 +291,7 @@ const REVIEW_COLUMNS = [
   'files_changed', 'additions', 'deletions', 'created_at', 'started_at', 'finished_at',
   'source', 'working_tree', 'base_reason', 'group_key',
   'runner_pid', 'runner_started_at', 'reviewer_pgids', 'code_verdict', 'code_can_merge', 'depends_on',
-  'proposed_requirements',
+  'proposed_requirements', 'second_opinion',
 ] as const satisfies readonly (keyof ReviewRow)[];
 
 /** Columns group_key is derived from; changing one of them re-derives it. */
@@ -322,6 +325,7 @@ export function createReview(input: CreateReviewInput): ReviewRow {
     // the first moment: no other process's recovery can see it unowned.
     runner_pid: SELF.pid, runner_started_at: SELF.startedAt, reviewer_pgids: null,
     code_verdict: null, code_can_merge: null, depends_on: null, proposed_requirements: null,
+    second_opinion: null,
   };
   for (const column of REVIEW_COLUMNS) {
     const value = (input as Record<string, unknown>)[column];
@@ -589,9 +593,9 @@ export function getLogs(reviewId: number): LogRow[] {
 export function replaceFindings(reviewId: number, findings: ReviewOutput['findings']): void {
   const insert = db.prepare(
     `INSERT INTO findings (review_id, severity, category, file, line, end_line, title, problem, why, suggestion, snippet,
-                           kind, cause_file, cause_line, hunk, anchor_status, lens, ord)
+                           kind, cause_file, cause_line, hunk, anchor_status, lens, corroborated, ord)
      VALUES (@review_id, @severity, @category, @file, @line, @end_line, @title, @problem, @why, @suggestion, @snippet,
-             @kind, @cause_file, @cause_line, @hunk, @anchor_status, @lens, @ord)`,
+             @kind, @cause_file, @cause_line, @hunk, @anchor_status, @lens, @corroborated, @ord)`,
   );
   const run = db.transaction(() => {
     db.prepare(`DELETE FROM findings WHERE review_id = ?`).run(reviewId);
@@ -614,6 +618,7 @@ export function replaceFindings(reviewId: number, findings: ReviewOutput['findin
         hunk: finding.hunk ?? null,
         anchor_status: finding.anchor_status ?? 'unverified',
         lens: finding.lens ?? null,
+        corroborated: finding.corroborated ? 1 : null,
         ord: index,
       });
     });

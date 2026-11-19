@@ -3,6 +3,9 @@ import path from 'node:path';
 import { config } from './config.js';
 import { baseRequirements, branchCoverage, openRequirements, whereLabel } from './coverageView.js';
 import { listReviewers } from './reviewers/index.js';
+import { countsLine, formatElapsed, formatTokens } from './secondOpinion/format.js';
+import type { SecondOpinionRaw } from './secondOpinion/run.js';
+import type { SecondOpinionState } from './secondOpinion/types.js';
 import type {
   AnchorStatus, CheckoutResult, ContractIssue, CoverageRequirement, CoverageVerdict, Finding, FindingKind, ReviewOutput, ReviewRow,
   Severity, TicketInfo,
@@ -89,6 +92,8 @@ export interface RawPassOutputs {
   lenses: { lens: string; raw?: unknown; error: string | null }[];
   synthesis?: unknown;
   reanchor?: unknown;
+  /** The second opinion's files, the provider's output verbatim, and the conclusion answer. */
+  secondOpinion?: SecondOpinionRaw;
 }
 
 /** A branch report written in the context of a ticket group. */
@@ -125,6 +130,14 @@ async function writeRawOutputs(dir: string, raw: RawPassOutputs): Promise<void> 
   if (raw.synthesis !== undefined) await writeFile(path.join(dir, 'synthesis.json'), json(raw.synthesis), 'utf8');
   if (raw.reanchor !== undefined && raw.reanchor !== null) {
     await writeFile(path.join(dir, 'reanchor.json'), json(raw.reanchor), 'utf8');
+  }
+  const second = raw.secondOpinion;
+  if (second) {
+    if (second.output !== undefined) await writeFile(path.join(dir, 'second-opinion.json'), second.output, 'utf8');
+    if (second.background !== undefined) await writeFile(path.join(dir, 'second-opinion.background.md'), second.background, 'utf8');
+    if (second.rule !== undefined) await writeFile(path.join(dir, 'second-opinion.rule.json'), second.rule, 'utf8');
+    if (second.conclusion !== undefined) await writeFile(path.join(dir, 'conclusion.json'), json(second.conclusion), 'utf8');
+    if (second.reanchor !== undefined) await writeFile(path.join(dir, 'conclusion.reanchor.json'), json(second.reanchor), 'utf8');
   }
 }
 
@@ -208,10 +221,11 @@ export function renderReport(
   const findings = output.findings.filter((f) => f.lens !== 'tool').sort(
     (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
   );
+  const secondOpinion = output.second_opinion ?? null;
   if (findings.length === 0) {
     lines.push(toolFindings.length ? 'No issues found by the review passes; see Tool checks below.' : 'No issues found.', '');
   } else {
-    renderFindings(lines, findings);
+    renderFindings(lines, findings, secondOpinion?.provider);
   }
 
   if (toolFindings.length || toolObservations.length) {
@@ -227,8 +241,12 @@ export function renderReport(
     }
   }
 
+  if (secondOpinion) renderSecondOpinion(lines, secondOpinion, output);
+
   // Non-blocking by construction: nothing here feeds the merge gate.
-  const observations = output.observations.filter((o) => o.lens !== 'tool');
+  const observations = output.observations
+    .filter((o) => o.lens !== 'tool')
+    .map((o) => (o.lens === 'second_opinion' ? { ...o, note: `(second opinion) ${o.note}` } : o));
   lines.push('## Suggestions (non-blocking)', '');
   if (observations.length === 0) {
     lines.push('None.', '');
@@ -247,10 +265,12 @@ export function renderReport(
   return lines.join('\n');
 }
 
-function renderFindings(lines: string[], findings: readonly Finding[]): void {
+function renderFindings(lines: string[], findings: readonly Finding[], secondOpinionProvider?: string): void {
   findings.forEach((finding, index) => {
-    lines.push(`### ${index + 1}. [${finding.severity.toUpperCase()}] ${finding.title}`, '');
+    const from = finding.lens === 'second_opinion' ? ' (second opinion)' : '';
+    lines.push(`### ${index + 1}. [${finding.severity.toUpperCase()}] ${finding.title}${from}`, '');
     lines.push(`- **File:** ${location(finding.file, finding.line, finding.end_line)}${anchorNote(finding)}`);
+    if (finding.corroborated) lines.push(`- **Also found by:** the second opinion (${secondOpinionProvider ?? 'unknown'})`);
     if (finding.kind && finding.kind !== 'diff') lines.push(`- **Caused by:** ${causeText(finding)}`);
     if (finding.hunk) lines.push(`- **Hunk:** \`${finding.hunk}\``);
     if (finding.category) lines.push(`- **Category:** ${finding.category}`);
@@ -262,6 +282,63 @@ function renderFindings(lines: string[], findings: readonly Finding[]): void {
       lines.push('```', finding.snippet.replace(/```/g, "'''"), '```', '');
     }
   });
+}
+
+const SECOND_OPINION_STATUS: Record<string, string> = {
+  pending: 'pending',
+  running: 'running',
+  done: 'done',
+  skipped: 'skipped',
+  failed: 'failed',
+};
+
+/** The second opinion: what the provider said, how each comment was assessed, and what it changed. */
+function renderSecondOpinion(lines: string[], state: SecondOpinionState, output: ReviewOutput): void {
+  lines.push('## Second opinion', '');
+  lines.push(
+    'An independent review tool reviewed the same diff without seeing the review above. Each of its comments was ' +
+      'checked against the code; only confirmed ones are findings.',
+    '',
+  );
+  lines.push('| | |', '|---|---|');
+  lines.push(`| Provider | ${state.provider}${state.model ? ` · model ${cell(state.model)}` : ''} |`);
+  const status = SECOND_OPINION_STATUS[state.status] ?? state.status;
+  lines.push(`| Status | ${state.error ? `${status}: ${cell(state.error.split('\n')[0])}` : status}${state.partial ? ' (partial: not every file was reviewed)' : ''} |`);
+  if (state.elapsed_ms !== null) lines.push(`| Time | ${formatElapsed(state.elapsed_ms)} |`);
+  if (state.tokens) {
+    lines.push(`| Tokens | ${formatTokens(state.tokens.total)} (${formatTokens(state.tokens.input)} in, ${formatTokens(state.tokens.output)} out) |`);
+  }
+  if (state.files_reviewed !== null) lines.push(`| Files reviewed | ${state.files_reviewed} |`);
+  if (state.status === 'done' || state.comments_total > 0) {
+    lines.push(`| Comments | ${state.comments_total}${state.comments_total ? `: ${countsLine(state.counts)}` : ''} |`);
+  }
+  if (state.primary_verdict && state.status === 'done') {
+    const final = output.verdict;
+    lines.push(`| Verdict | ${final === state.primary_verdict ? `${final} (unchanged)` : `${state.primary_verdict} -> ${final}`} |`);
+  }
+  lines.push('');
+
+  if (state.comments.length) {
+    lines.push('| # | Location | Tool severity | Assessment | Comment | Reason |', '|---|---|---|---|---|---|');
+    state.comments.forEach((c, index) => {
+      const where = c.path ? `\`${c.path}:${c.end_line > c.start_line ? `${c.start_line}-${c.end_line}` : c.start_line}\`` : '-';
+      const a = c.assessment;
+      let verdict = a ? a.verdict.replace('_', ' ') : 'not assessed';
+      const target = a?.finding_ord !== null && a?.finding_ord !== undefined ? output.findings[a.finding_ord] : undefined;
+      if (a?.verdict === 'confirmed' && target) verdict = `confirmed: "${cell(target.title)}"`;
+      if (a?.verdict === 'duplicate' && target) verdict = `duplicate of "${cell(target.title)}"`;
+      lines.push(
+        `| ${index + 1} | ${where} | ${cell(c.severity)} | ${verdict} | ${cell(truncateText(c.content, 300))} | ${cell(a?.reason) || '-'} |`,
+      );
+    });
+    lines.push('');
+  }
+  if (state.conclusion) lines.push('### Conclusion of the second opinion', '', state.conclusion.trim(), '');
+}
+
+function truncateText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
 function ticketCell(review: ReportableReview, ticket: TicketInfo | null): string {

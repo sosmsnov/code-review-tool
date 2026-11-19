@@ -10,12 +10,14 @@ import { getReviewer } from './reviewers/index.js';
 import { parseAnthropicStreamLine } from './reviewers/anthropicStream.js';
 import type { ReviewerDefinition } from './reviewers/types.js';
 import {
-  anchorFindings, changedFilesFromPaths, checkAnchor, createAnchorContext, reanchorOutputSchema, type AnchorRunResult,
+  anchorFindings, changedFilesFromPaths, checkAnchor, createAnchorContext, reanchorOutputSchema,
+  type AnchorContext, type AnchorRunResult,
 } from './anchors.js';
 import { anchorFields, attributeLenses, normalizeLens } from './findingFields.js';
 import { emptyToolCheckRun, renderToolChecks, runToolChecks, type CheckContext, type ToolCheckRun } from './checks/index.js';
 import { parseChecksConfig, type ChecksConfig } from './checks/config.js';
 import { loadRepoRules, readRepoChecksFile, renderRepoRules, type RepoRules } from './repoRules.js';
+import { runSecondOpinion, type SecondOpinionRaw, type SecondOpinionRequest } from './secondOpinion/run.js';
 import { LENS_NAMES } from './types.js';
 import type {
   ChangedFile, CheckoutResult, Finding, LensName, LensOutput, OnLog, ProposedRequirement, ReviewOutput, ReviewRow, TicketInfo,
@@ -64,6 +66,11 @@ export interface RunReviewOptions {
    * items by id instead of deriving its own list.
    */
   checklist?: ChecklistItem[];
+  /**
+   * Run the second opinion after the primary result (see secondOpinion/run.ts).
+   * Absent: the review is exactly the primary pipeline.
+   */
+  secondOpinion?: SecondOpinionRequest;
 }
 
 /** One item of a ticket's stored checklist, as a review evaluates it. */
@@ -107,7 +114,7 @@ const proposedSchema = z
   .nullish()
   .transform((v) => (v ?? []).map((p) => ({ text: p.text.trim(), reason: p.reason.trim() })).filter((p) => p.text));
 
-const findingSchema = z.object({
+export const findingSchema = z.object({
   severity: z.enum(['blocker', 'major', 'minor', 'nit']),
   category: z.string().nullish().transform((v) => v ?? 'correctness'),
   file: z.string().nullish().transform((v) => v ?? null),
@@ -122,7 +129,7 @@ const findingSchema = z.object({
   lens: z.unknown().optional().transform(normalizeLens),
 });
 
-const observationSchema = z.object({
+export const observationSchema = z.object({
   file: z.string().nullish().transform((v) => v ?? null),
   line: z.coerce.number().int().nullish().transform((v) => v ?? null),
   note: z.string().min(1),
@@ -199,6 +206,7 @@ export const PROMPT_FILES = [
   'reanchor.md',
   'coverage.md',
   'requirements.md',
+  'second-opinion.md',
 ] as const;
 
 const cachedTemplates = new Map<string, string>();
@@ -474,6 +482,8 @@ export interface ReviewRunOutput extends ReviewOutput {
   anchors: AnchorRunResult;
   /** The tool checks as they ran; their findings and observations are already in the output. */
   toolChecks: ToolCheckRun;
+  /** The second opinion's files and answers; absent when none was requested. */
+  secondOpinionRaw?: SecondOpinionRaw;
 }
 
 export interface PassOptions {
@@ -709,11 +719,53 @@ export async function runReview(
 
   const attributed = attributeLenses(output.findings as ReviewOutput['findings'], lensResults);
   const anchorCtx = createAnchorContext(checkout.dir, checkoutChangedFiles(checkout));
+  const { anchors, reanchorRaw } = await anchorWithReanchor(anchorCtx, attributed, vars, passOpts, onLog);
+  if (opts.signal?.aborted) throw new Error('Review cancelled');
+
+  // Tool results are appended by the tool, after synthesis, so synthesis cannot drop them.
+  const toolFindings: Finding[] = toolChecks.findings.map((f) => checkAnchor(anchorCtx, f).finding);
+  const primary = normalize(
+    {
+      ...output,
+      findings: [...anchors.findings, ...toolFindings],
+      observations: [...output.observations, ...toolChecks.observations],
+    },
+    { slice: Boolean(opts.slice) },
+  );
+  const material = { lensResults, synthesisRaw, reanchorRaw, anchors, toolChecks };
+  if (!opts.secondOpinion) return { ...primary, ...material };
+
+  const second = await runSecondOpinion({
+    review,
+    checkout,
+    ticket,
+    primary,
+    vars,
+    rulesText: rules.text,
+    slice: Boolean(opts.slice),
+    passOpts,
+    onLog,
+    request: opts.secondOpinion,
+  });
+  return { ...second.output, ...material, secondOpinionRaw: second.raw };
+}
+
+/**
+ * Checks every finding's anchor on the checkout and runs the one re-anchor
+ * pass for the badly anchored ones (see anchors.ts).
+ */
+export async function anchorWithReanchor(
+  anchorCtx: AnchorContext,
+  findings: Finding[],
+  vars: PromptVars,
+  passOpts: PassOptions,
+  onLog: OnLog,
+): Promise<{ anchors: AnchorRunResult; reanchorRaw: unknown }> {
   const reanchorLog: OnLog = (level, message) => onLog(level, `[re-anchor] ${message}`);
   let reanchorRaw: unknown = null;
   const anchors = await anchorFindings(
     anchorCtx,
-    attributed,
+    findings,
     async (findingsBlock) => {
       const reanchorPrompt = await buildReanchorPrompt(vars, findingsBlock);
       // One attempt: the pass is a bounded clean-up, never a second review.
@@ -723,25 +775,7 @@ export async function runReview(
     },
     (level, message) => onLog(level, message),
   );
-  if (opts.signal?.aborted) throw new Error('Review cancelled');
-
-  // Tool results are appended by the tool, after synthesis, so synthesis cannot drop them.
-  const toolFindings: Finding[] = toolChecks.findings.map((f) => checkAnchor(anchorCtx, f).finding);
-  return {
-    ...normalize(
-      {
-        ...output,
-        findings: [...anchors.findings, ...toolFindings],
-        observations: [...output.observations, ...toolChecks.observations],
-      },
-      { slice: Boolean(opts.slice) },
-    ),
-    lensResults,
-    synthesisRaw,
-    reanchorRaw,
-    anchors,
-    toolChecks,
-  };
+  return { anchors, reanchorRaw };
 }
 
 function loadRules(repo: string, opts: RunReviewOptions, onLog: OnLog): RepoRules {
@@ -849,13 +883,74 @@ export function normalize(output: ReviewOutput, opts: { slice?: boolean } = {}):
 }
 
 /** One reviewer CLI process: spawn it, stream its output, return its answer. Exported for tests. */
-export function spawnReviewer(
+export async function spawnReviewer(
   prompt: string,
   opts: PassOptions,
   onLog: OnLog,
 ): Promise<string> {
   const { reviewer, model, dir, timeoutMs, signal } = opts;
-  return new Promise<string>((resolve, reject) => {
+  let result: string | null = null;
+  let resultIsError = false;
+  const onLine = (line: string) => {
+    const handled = reviewer.parseStreamLine(line, onLog);
+    if (handled.result !== undefined) {
+      result = handled.result;
+      resultIsError = handled.isError === true;
+    }
+  };
+  const exit = await spawnTracked({
+    bin: reviewer.bin,
+    // Built lazily: a cancelled or refused pass never builds its argv.
+    args: () => reviewer.buildArgs(prompt, model, dir),
+    cwd: dir,
+    env: () => reviewer.buildChildEnv(),
+    timeoutMs,
+    signal,
+    groups: opts.groups,
+    onStdoutLine: onLine,
+  });
+  const answer = result as string | null;
+  if (answer !== null && !resultIsError) return answer;
+  if (answer !== null && resultIsError) {
+    throw new Error(`The review model reported an error: ${String(answer).slice(0, 2000)}`);
+  }
+  const { code, stderrTail } = exit;
+  const hint = reviewer.describeFailure(stderrTail, code);
+  const detail = `${reviewer.bin} exited with code ${code ?? 'null'}${stderrTail ? `: ${stderrTail.trim()}` : ''}`;
+  throw new Error(hint ? `${hint}\n${detail}` : detail);
+}
+
+export interface TrackedSpawnOptions {
+  bin: string;
+  args: () => string[];
+  cwd: string;
+  env: () => NodeJS.ProcessEnv;
+  timeoutMs: number;
+  signal: AbortSignal | undefined;
+  /** This review's live processes; see `RunReviewOptions.onProcessGroups`. */
+  groups?: ReviewGroupTracker;
+  /** Each non-empty stdout line, trimmed. */
+  onStdoutLine?: (line: string) => void;
+  /** Each non-empty stderr line, trimmed. */
+  onStderrLine?: (line: string) => void;
+}
+
+export interface TrackedExit {
+  code: number | null;
+  /** The last 4000 characters of stderr. */
+  stderrTail: string;
+}
+
+/**
+ * Starts one process of a review in its own process group, tracked like every
+ * reviewer process (killed on timeout, cancel, and shutdown), and resolves
+ * with its exit once every holder of its pipes is gone. Rejects when the
+ * review is cancelled, the process times out or cannot start, or this process
+ * is shutting down.
+ */
+export function spawnTracked(opts: TrackedSpawnOptions): Promise<TrackedExit> {
+  const { bin, cwd, timeoutMs, signal } = opts;
+  return new Promise<TrackedExit>((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('Review cancelled'));
       return;
@@ -864,10 +959,9 @@ export function spawnReviewer(
       reject(new Error('Shutting down: no new reviewer process is started'));
       return;
     }
-    const args = reviewer.buildArgs(prompt, model, dir);
-    const child = spawn(reviewer.bin, args, {
-      cwd: dir,
-      env: reviewer.buildChildEnv(),
+    const child = spawn(bin, opts.args(), {
+      cwd,
+      env: opts.env(),
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true, // own process group, so we can kill the whole tree
     });
@@ -876,7 +970,7 @@ export function spawnReviewer(
     if (pgid !== undefined) {
       ensureExitHook();
       liveGroups.add(pgid);
-      opts.groups?.add({ pgid, bin: path.basename(reviewer.bin), spawnedAt: new Date().toISOString() });
+      opts.groups?.add({ pgid, bin: path.basename(bin), spawnedAt: new Date().toISOString() });
     }
     let untracked = false;
     const untrack = () => {
@@ -888,9 +982,8 @@ export function spawnReviewer(
 
     let settled = false;
     let stdoutBuf = '';
+    let stderrBuf = '';
     let stderrTail = '';
-    let result: string | null = null;
-    let resultIsError = false;
 
     const killTree = () => {
       if (child.pid === undefined) return;
@@ -904,12 +997,12 @@ export function spawnReviewer(
       }
     };
 
-    const finish = (err: Error | null, value?: string) => {
+    const finish = (err: Error | null, value?: TrackedExit) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      if (err) reject(err); else resolve(value ?? '');
+      if (err) reject(err); else resolve(value!);
     };
 
     const timer = setTimeout(() => {
@@ -923,29 +1016,30 @@ export function spawnReviewer(
     };
     signal?.addEventListener('abort', onAbort, { once: true });
 
+    const drain = (buf: string, onLine: ((line: string) => void) | undefined): string => {
+      let rest = buf;
+      let nl = rest.indexOf('\n');
+      while (nl >= 0) {
+        const line = rest.slice(0, nl).trim();
+        rest = rest.slice(nl + 1);
+        nl = rest.indexOf('\n');
+        if (line) onLine?.(line);
+      }
+      return rest;
+    };
+
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
-      stdoutBuf += chunk;
-      let nl = stdoutBuf.indexOf('\n');
-      while (nl >= 0) {
-        const line = stdoutBuf.slice(0, nl).trim();
-        stdoutBuf = stdoutBuf.slice(nl + 1);
-        nl = stdoutBuf.indexOf('\n');
-        if (!line) continue;
-        const handled = reviewer.parseStreamLine(line, onLog);
-        if (handled.result !== undefined) {
-          result = handled.result;
-          resultIsError = handled.isError === true;
-        }
-      }
+      stdoutBuf = drain(stdoutBuf + chunk, opts.onStdoutLine);
     });
 
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
       stderrTail = (stderrTail + chunk).slice(-4000);
+      if (opts.onStderrLine) stderrBuf = drain(stderrBuf + chunk, opts.onStderrLine);
     });
 
-    child.on('error', (err) => finish(new Error(`Failed to start ${reviewer.bin}: ${err.message}`)));
+    child.on('error', (err) => finish(new Error(`Failed to start ${bin}: ${err.message}`)));
 
     child.on('close', (code) => {
       // `close` comes once every holder of the pipes is gone: normally the
@@ -953,25 +1047,10 @@ export function spawnReviewer(
       untrack();
       // Flush a trailing line without a newline.
       const tail = stdoutBuf.trim();
-      if (tail) {
-        const handled = reviewer.parseStreamLine(tail, onLog);
-        if (handled.result !== undefined) {
-          result = handled.result;
-          resultIsError = handled.isError === true;
-        }
-      }
-      if (settled) return;
-      if (result !== null && !resultIsError) {
-        finish(null, result);
-        return;
-      }
-      if (result !== null && resultIsError) {
-        finish(new Error(`The review model reported an error: ${String(result).slice(0, 2000)}`));
-        return;
-      }
-      const hint = reviewer.describeFailure(stderrTail, code);
-      const detail = `${reviewer.bin} exited with code ${code ?? 'null'}${stderrTail ? `: ${stderrTail.trim()}` : ''}`;
-      finish(new Error(hint ? `${hint}\n${detail}` : detail));
+      if (tail) opts.onStdoutLine?.(tail);
+      const errTail = stderrBuf.trim();
+      if (errTail) opts.onStderrLine?.(errTail);
+      finish(null, { code, stderrTail });
     });
   });
 }

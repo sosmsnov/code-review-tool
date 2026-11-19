@@ -335,7 +335,8 @@ branch never touched. Each finding therefore says what its location is:
 | `kind` | `diff` (a changed line), `regression` (untouched code that now breaks), `stale_doc` (untouched docs that describe the old behaviour), `consumer` (an untouched parser or client of a changed shape) |
 | `cause_file`, `cause_line` | for a non-diff kind: the changed line that causes it; must be in the changed set |
 | `hunk` | for a diff finding, when the reviewer gave it: the hunk header `@@ -a,b +c,d @@` |
-| `lens` | the lens whose candidate synthesis kept, when known; `tool` for a [tool check](configuration.md#repository-rules-and-tool-checks) |
+| `lens` | the lens whose candidate synthesis kept, when known; `tool` for a [tool check](configuration.md#repository-rules-and-tool-checks); `second_opinion` for a comment of the [second opinion](configuration.md#second-opinion) that the review's reviewer confirmed |
+| `corroborated` | 1 when the second opinion reported the same defect; null otherwise |
 | `anchor_status` | the check below: `ok`, `off_diff`, `missing_path`, `line_out_of_range`, or `unverified` |
 
 After synthesis the tool checks every finding at HEAD, in the sandbox

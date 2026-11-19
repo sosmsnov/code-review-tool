@@ -45,7 +45,7 @@ truth for every default; `.env.example` lists each variable with its default.
 | `REVIEW_CONCURRENCY` | no | `2` | How many reviews run at once. Each review fans out to 5 lens processes plus a synthesis pass, so the process ceiling is this value * 6 |
 | `SECOND_OPINION` | no | `none` | Default [second opinion](#second-opinion) for new reviews: `none` or `ocr` |
 | `OCR_BIN` | no | `ocr` | Path to the Open Code Review CLI |
-| `SECOND_OPINION_TIMEOUT_MS` | no | `900000` | Timeout of the second-opinion process; also passed to `ocr` as `--timeout` in minutes, rounded up |
+| `SECOND_OPINION_TIMEOUT_MS` | no | `900000` | Timeout of the second-opinion process; `ocr` gets `--timeout` one minute shorter (whole minutes, at least 1), so it stops on its own and writes its partial output first |
 | `OCR_CONCURRENCY` | no | `3` | `ocr --concurrency` |
 | `OCR_TOKEN_BUDGET` | no | `800000` | `ocr --max-tokens-budget` |
 | `COVERAGE_DEBOUNCE_MS` | no | `15000` | How long ticket coverage waits after a branch review of the group settles, so a batch is covered once |
@@ -143,6 +143,10 @@ default it is skipped with a warning.
 `ocr` reviews test files too: the tool passes its own `--rule` file with the
 repository rules and the test paths included, so a `.opencodereview/rule.json`
 in the repository is not read.
+
+The background file (the ticket text, its requirements and approved decisions)
+goes to whatever LLM vendor the provider is configured with, which may not be
+the vendor of your reviewer.
 
 ## Repository rules and tool checks
 

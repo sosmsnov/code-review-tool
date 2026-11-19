@@ -612,7 +612,11 @@ the report: `second-opinion.json` (the provider output verbatim),
 
 The choice: `SECOND_OPINION` (default `none`) for a request that names none;
 an explicitly requested provider that is not installed is a 400; a re-run
-keeps the previous run's choice; ticket batches pass it to every branch.
+keeps the previous run's provider, and a run stored without one (none chosen,
+or older than the stage) gets `SECOND_OPINION`; ticket batches pass it to every
+branch; the CLI uses `SECOND_OPINION` and leaves out an uninstalled default with
+a warning. Every route that returns a review row serves `second_opinion`
+parsed, the list only its summary.
 
 ## Database (`src/db.ts`, better-sqlite3, `data/review.db`)
 
@@ -720,7 +724,7 @@ CREATE TABLE observations (
   note TEXT NOT NULL,
   rationale TEXT,
   ord INTEGER NOT NULL,
-  lens TEXT                       -- 'tool' for a tool check, else NULL       (added)
+  lens TEXT                       -- 'tool' for a tool check, 'second_opinion', else NULL (added)
 );
 CREATE INDEX idx_observations_review ON observations(review_id);
 

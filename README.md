@@ -74,6 +74,11 @@ reviewer infers the requirements from the change and says so.
 A CLI that is not installed is shown as such and cannot be selected; the others
 keep working. Models are discovered from each CLI at runtime.
 
+A review can also get a second opinion: after the review, Open Code Review
+(`ocr`) reviews the same diff without seeing the findings, and the review's own
+reviewer checks each of its comments against the code. Only confirmed comments
+become findings. See [Second opinion](docs/configuration.md#second-opinion).
+
 ![Walkthrough of a review](docs/images/demo.gif)
 
 ## How a review works

@@ -554,6 +554,66 @@ prefix. `normalize()` runs on the merged list, so a tool `major` or
 tool result because it never owned one. `ReviewRunOutput.toolChecks` keeps the
 run (which checks ran, which failed).
 
+### Second opinion (`secondOpinion/`, `prompts/second-opinion.md`)
+
+Optional, per review. When `reviews.second_opinion` was set at creation
+(`{ provider, status: 'pending' }`), `runReview()` runs two more stages after
+the primary result is normalised, still inside the review (status
+`reviewing`), before `assertPristine()` and before the row is `done`:
+
+1. **Provider.** An external reviewer CLI reviews the same checkout and the
+   same `baseSha..headSha` range without seeing the primary findings. A
+   provider is a `SecondOpinionProvider` (registry in `secondOpinion/index.ts`,
+   like the reviewers): `buildArgs()`, `buildChildEnv()` (the reviewers'
+   allowlist), `parseOutput()`, `forwardLogLine()`, `describeFailure()`,
+   `isAvailable()`. The first one is `ocr`:
+   `ocr review --repo --from --to --format json --output --audience human
+   --color never --concurrency --timeout --max-tokens-budget --rule
+   --background-file`. Its LLM provider and model come from its own config.
+   The tool writes, under `<DATA_DIR>/second-opinion/<review id>/` and never in
+   the checkout, a background file (ticket, stored checklist, approved
+   decisions, slice scope, then the ticket text, trimmed first at 8,000
+   characters) and a rule file (the repository rules for `**/*`, plus an
+   `include` of test paths, which `ocr` skips by default). The output is parsed
+   leniently (unknown severities kept, missing lines are 1). Its `[ocr]` stderr
+   lines go to the log as `second opinion: ...`, without the per-tool-call
+   lines. The process is started with `spawnTracked()`, the same tracking as
+   reviewer processes (`liveGroups`, `ReviewGroupTracker`,
+   `reviews.reviewer_pgids`), so timeout (`SECOND_OPINION_TIMEOUT_MS`), cancel,
+   shutdown and recovery stop it.
+2. **Conclusion.** With at least one comment, one pass of the review's own
+   reviewer and model (`common-preamble.md` + `second-opinion.md`, with
+   `{{PRIMARY_FINDINGS}}` and `{{SECOND_OPINION}}`) assesses at most 40
+   comments, highest provider severity first; the rest are `not_assessed`.
+   Each comment is `confirmed` (a new defect, returned as a lens-shaped
+   finding with a severity on the tool's own scale), `duplicate`
+   (`duplicate_of` a primary finding), `observation`, or `rejected`, always
+   with a reason, plus a short conclusion. zod, one corrective retry. Confirmed
+   findings get `lens: 'second_opinion'` and go through `anchorWithReanchor()`
+   (the same anchor and re-anchor flow as synthesis); a duplicate sets
+   `corroborated` on the primary finding. `normalize()` then runs on the merged
+   list, so a confirmed `major` turns `approve` into `changes_requested`; the
+   primary findings and observations are never dropped, moved or re-rated.
+   Zero comments: no pass, the stage is `done` with a fixed conclusion.
+
+A failure of either stage (exit code, timeout, unparsable output, a conclusion
+that never validates) leaves the primary result and records `failed` with the
+reason; an uninstalled provider records `skipped`. A cancel aborts the review
+as before. The state is rewritten on every change through `onUpdate`
+(`status`, times, model, tokens, files, `partial`, comments with their
+assessments, `counts`, `conclusion`, `primary_verdict`, `primary_can_merge`,
+`error`); a review that ends before the stage does closes it (`pending` ->
+`skipped`, `running` -> `failed`). Log lines the page turns into chips:
+`second opinion ocr: started`, `second opinion ocr: 7 comments, 9 files, 245k
+tokens, 3m12s`, `second opinion ocr: failed (...)`, `conclusion: started`,
+`conclusion: 2 confirmed, 1 duplicate, 1 observation, 3 rejected`. Kept beside
+the report: `second-opinion.json` (the provider output verbatim),
+`second-opinion.background.md`, `second-opinion.rule.json`, `conclusion.json`.
+
+The choice: `SECOND_OPINION` (default `none`) for a request that names none;
+an explicitly requested provider that is not installed is a 400; a re-run
+keeps the previous run's choice; ticket batches pass it to every branch.
+
 ## Database (`src/db.ts`, better-sqlite3, `data/review.db`)
 
 Migrations run at startup from an in-code array plus `ensureColumn()` calls for
@@ -623,7 +683,8 @@ CREATE TABLE findings (
   hunk TEXT,                      -- '@@ -a,b +c,d @@', diff findings        (added)
   anchor_status TEXT NOT NULL DEFAULT 'unverified',
                                   -- ok|off_diff|missing_path|line_out_of_range|unverified (added)
-  lens TEXT                       -- source lens when known; 'tool' for a tool check (added)
+  lens TEXT,                      -- source lens when known; 'tool' for a tool check, 'second_opinion' (added)
+  corroborated INTEGER            -- 1 when the second opinion found it too (added)
 );
 CREATE INDEX idx_findings_review ON findings(review_id);
 
@@ -764,6 +825,7 @@ CREATE TABLE ticket_requirements (
 -- requirements_open_questions TEXT (JSON: what the ticket mentions but does not ask to change);
 -- requirements gains requirement_id INTEGER, reviews gains proposed_requirements TEXT (JSON); NULL on older rows.
 -- ticket_coverage gains contract_json TEXT (JSON: [{ problem, severity, sites: [{ repo, branch, file, line, anchor_status }] }]).
+-- reviews gains second_opinion TEXT (JSON, see "Second opinion"), findings gains corroborated INTEGER (1 or NULL).
 ```
 
 The tables are created with `IF NOT EXISTS` and the columns with
@@ -1057,7 +1119,9 @@ missing ❌, not_verifiable ❓), `## Issues to fix` ordered by severity with
 `Caused by` for non-diff kinds, the hunk when given, problem, why, suggested
 fix, and snippet (model findings only), `## Tool checks` with the tool
 findings in the same format and the tool observations (only when there are
-any), `## Suggestions
+any), `## Second opinion` (provider, time, tokens, counts, each comment with
+its assessment and reason, the conclusion, and the primary against the final
+verdict; only when the review had one), `## Suggestions
 (non-blocking)` listing the model's observations, one `file:line` and note each, with an
 indented rationale line (or `None.`), and `## Conclusion` naming exactly what is
 still required before merge.

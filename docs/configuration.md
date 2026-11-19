@@ -43,6 +43,11 @@ truth for every default; `.env.example` lists each variable with its default.
 | `GROK_REVIEW_MODEL` | no | first model of `grok models` | Picks the Grok default among the listed models; an unlisted id is ignored with a warning |
 | `REVIEW_TIMEOUT_MS` | no | `1800000` | Hard timeout for one review process (each lens and the synthesis pass) |
 | `REVIEW_CONCURRENCY` | no | `2` | How many reviews run at once. Each review fans out to 5 lens processes plus a synthesis pass, so the process ceiling is this value * 6 |
+| `SECOND_OPINION` | no | `none` | Default [second opinion](#second-opinion) for new reviews: `none` or `ocr` |
+| `OCR_BIN` | no | `ocr` | Path to the Open Code Review CLI |
+| `SECOND_OPINION_TIMEOUT_MS` | no | `900000` | Timeout of the second-opinion process; also passed to `ocr` as `--timeout` in minutes, rounded up |
+| `OCR_CONCURRENCY` | no | `3` | `ocr --concurrency` |
+| `OCR_TOKEN_BUDGET` | no | `800000` | `ocr --max-tokens-budget` |
 | `COVERAGE_DEBOUNCE_MS` | no | `15000` | How long ticket coverage waits after a branch review of the group settles, so a batch is covered once |
 | `DOCKER_BIN` | no | `docker` | Path to the Docker CLI |
 | `GIT_IMAGE` | no | `code-review-tool-git:latest` | Sandbox image tag |
@@ -118,6 +123,26 @@ npm run review -- --list-models codex   # just one of them
 the resolved `defaultModel`, `source`, `fetchedAt`, and `noModelsHint`.
 `GET /api/health` reports the reviewers without their model lists, so it stays
 cheap.
+
+## Second opinion
+
+After the review, an external review tool can review the same diff on its own,
+without seeing the findings. The review's reviewer then checks each of its
+comments against the code: confirmed comments become findings (tagged
+`second opinion`) and can change the verdict, duplicates mark the finding they
+repeat, the rest are observations or rejected with a reason. A failure of the
+second opinion never fails the review; the review keeps its own result.
+
+The first provider is Open Code Review (`ocr`). Install it and configure its
+LLM provider in its own config (`~/.opencodereview/config.json`); the tool
+passes it no provider, model, or key. Then either set `SECOND_OPINION=ocr` for
+every review or pick it per review (the start form, `secondOpinion` in the API,
+the MCP tools). A provider that is not installed cannot be picked; as the env
+default it is skipped with a warning.
+
+`ocr` reviews test files too: the tool passes its own `--rule` file with the
+repository rules and the test paths included, so a `.opencodereview/rule.json`
+in the repository is not read.
 
 ## Repository rules and tool checks
 

@@ -225,9 +225,9 @@ export async function reviewRoutes(app: FastifyInstance, opts: ReviewRouteOption
       req.log?.warn?.(`ticket group: ${(err as Error).message}`);
     }
 
-    // A batch of a ticket's branches leaves out the ones its latest finished reviews already saw.
+    // A ticket input leaves out the branches whose latest finished reviews already saw their heads.
     let skipped: SkippedTarget[] = [];
-    if (chosen.length > 1 && !parsed.data.reviewUnchanged) {
+    if (ticket && !parsed.data.reviewUnchanged) {
       ({ run: chosen, skipped } = await skipUnchanged(chosen, (t) => ticketGroupOf(t, ticket), opts.headOf));
     }
 

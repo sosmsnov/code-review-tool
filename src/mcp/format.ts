@@ -14,6 +14,7 @@ import type {
 import { isSatisfied, type Attribution, type AttributionCounts, type TicketCoverageBadge } from '../coverageView.js';
 // Reads no configuration: it imports only the provider names.
 import { summarizeSecondOpinion, toSecondOpinionState } from '../secondOpinion/state.js';
+import { parseRunUsage, type RunUsage } from '../usage.js';
 
 export const TERMINAL_STATUSES: readonly ReviewStatus[] = ['done', 'failed', 'cancelled'];
 export const ACTIVE_STATUSES: readonly ReviewStatus[] = ['queued', 'fetching', 'reviewing'];
@@ -244,6 +245,12 @@ export interface ReviewDetailPayload {
   proposed_requirements?: { text: string; reason: string }[];
 }
 
+/** The detail route serves `usage` parsed; a raw row carries the stored JSON. */
+function toRunUsage(value: unknown): RunUsage | null {
+  if (typeof value === 'string') return parseRunUsage(value);
+  return value && typeof value === 'object' && 'totals' in value ? (value as RunUsage) : null;
+}
+
 /** `R12` for the stored checklist item 12. */
 export function requirementRef(id: number | null | undefined): string | null {
   return id ? `R${id}` : null;
@@ -317,6 +324,7 @@ export function reviewDetail(payload: ReviewDetailPayload, url: string, opts: Re
   const proposed = payload.proposed_requirements ?? [];
   // The detail route serves it parsed; a raw row carries the stored JSON.
   const secondOpinion = summarizeSecondOpinion(toSecondOpinionState(review.second_opinion as unknown));
+  const usage = toRunUsage(review.usage as unknown);
 
   return {
     ...reviewRef(review, url),
@@ -347,6 +355,7 @@ export function reviewDetail(payload: ReviewDetailPayload, url: string, opts: Re
       ? { proposed_requirements: proposed.slice(0, 20).map((p) => ({ text: truncate(p.text, 300), reason: truncate(p.reason, 300) })) }
       : {}),
     ...(secondOpinion ? { second_opinion: secondOpinion } : {}),
+    ...(usage ? { usage: { totals: usage.totals } } : {}),
     blocking_count: done ? review.blocking_count ?? 0 : null,
     severity_counts: done ? severityCounts(findings) : null,
     findings: done ? compact.findings : [],

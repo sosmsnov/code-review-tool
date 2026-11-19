@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { baseRequirements, branchCoverage, openRequirements, whereLabel } from './coverageView.js';
 import { listReviewers } from './reviewers/index.js';
 import { countsLine, formatElapsed, formatTokens } from './secondOpinion/format.js';
+import { usageTotalsLine, type RunUsage } from './usage.js';
 import type { SecondOpinionRaw } from './secondOpinion/run.js';
 import type { SecondOpinionState } from './secondOpinion/types.js';
 import type {
@@ -185,6 +186,8 @@ export function renderReport(
   );
   lines.push('');
 
+  if (output.usage) renderUsage(lines, output.usage);
+
   lines.push('## Summary', '', output.summary.trim() || '(no summary)', '');
 
   lines.push(group ? '## Ticket requirements (this branch)' : '## Ticket requirements', '');
@@ -285,6 +288,21 @@ function renderFindings(lines: string[], findings: readonly Finding[], secondOpi
 }
 
 /** The second opinion: what the provider said, how each comment was assessed, and what it changed. */
+/** Totals, then one row per pass. "Read" is uncached input plus cache reads. */
+export function renderUsage(lines: string[], usage: RunUsage): void {
+  lines.push('## Usage', '', usageTotalsLine(usage.totals), '');
+  if (usage.totals.cost_usd !== null) lines.push(`Reported cost: USD ${usage.totals.cost_usd.toFixed(2)}`, '');
+  lines.push('| Pass | Processes | Read | Written | Out | Weighted |', '|---|---|---|---|---|---|');
+  for (const p of usage.passes) {
+    const u = p.usage;
+    lines.push(
+      `| ${p.name} | ${p.processes} | ${u ? formatTokens(u.input + u.cache_read) : '-'} | ` +
+        `${u ? formatTokens(u.cache_write) : '-'} | ${u ? formatTokens(u.output) : '-'} | ${formatTokens(p.weighted)} |`,
+    );
+  }
+  lines.push('');
+}
+
 function renderSecondOpinion(lines: string[], state: SecondOpinionState, output: ReviewOutput): void {
   lines.push('## Second opinion', '');
   lines.push(

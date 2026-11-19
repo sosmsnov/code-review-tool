@@ -9,7 +9,7 @@ import { rowLinks } from '../githubLinks.js';
 import { resolveTargets } from '../resolver.js';
 import { chooseModel, getReviewer, REVIEWER_NAMES, resolveStartChoice } from '../reviewers/index.js';
 import {
-  applyGroupBases, defaultDetectDeps, detectGroupParents, GroupError, joinGroup, orderBatch, orderedMembers, setChainOrder,
+  applyGroupBases, defaultDetectDeps, groupHeads, detectGroupParents, GroupError, joinGroup, orderBatch, orderedMembers, setChainOrder,
   setParentByHand, ticketGroupView, type DetectDeps, type TicketGroupView,
 } from '../ticketGroups.js';
 import {
@@ -27,6 +27,9 @@ import {
 import { resolveSecondOpinion, type SecondOpinionName } from '../secondOpinion/index.js';
 import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
 import { reviewJson, startRun } from './reviews.js';
+import { budgetRefusal } from '../budget.js';
+import { parseRunUsage, sumTotals } from '../usage.js';
+import { skipUnchanged, targetHeadSha, type HeadLookup, type SkippedTarget } from '../skipUnchanged.js';
 
 export interface TicketRouteDeps {
   resolve: typeof resolveTargets;
@@ -38,6 +41,8 @@ export interface TicketRouteDeps {
   recompute: typeof recomputeCoverage;
   pending: (key: string) => boolean;
   derive: (key: string, opts: DeriveOptions) => { started: boolean; done: Promise<DeriveResult> };
+  /** The head a review of a target would check out now. */
+  headOf: HeadLookup;
 }
 
 const defaultDeps: TicketRouteDeps = {
@@ -47,6 +52,7 @@ const defaultDeps: TicketRouteDeps = {
   recompute: recomputeCoverage,
   pending: coveragePending,
   derive: deriveOnce,
+  headOf: targetHeadSha,
 };
 
 const keyParams = z.object({ key: z.string().trim().min(1).max(200) });
@@ -64,6 +70,10 @@ const reviewBody = z.object({
   refresh: z.boolean().optional(),
   // A second opinion for every branch review; absent → SECOND_OPINION.
   secondOpinion: z.enum(SECOND_OPINION_CHOICES).optional(),
+  // Start even when the window's usage budget is spent.
+  ignoreBudget: z.boolean().optional(),
+  // Review a branch whose head its latest finished review already saw (skipped by default).
+  reviewUnchanged: z.boolean().optional(),
 });
 
 const coverageBody = z.object({
@@ -122,6 +132,7 @@ export function coveragePayload(row: TicketCoverageRow | undefined | null) {
     requirements: parseCoverageRequirements(row),
     // null: the pass predates the contract check; [] means it found no mismatch.
     contract_issues: parseContractIssues(row.contract_json),
+    usage: parseRunUsage(row.usage),
     review_ids: parseIds(row.review_ids),
     reviewer: row.reviewer,
     model: row.model,
@@ -182,7 +193,18 @@ export function ticketPayload(key: string, pending: (key: string) => boolean = c
       : null,
     coverage_pending: isPending,
     run: runPayload(runId ? ownRun(key, runId) : latestTicketRun(key)),
+    usage: ticketUsage(key, done),
   };
+}
+
+/** What the ticket's current state cost: the latest finished review of each branch plus the coverage pass. */
+export function ticketUsage(key: string, coverage: TicketCoverageRow | undefined) {
+  const reviews = [...groupHeads(key).values()].map((h) => h.latestDone).filter((r): r is ReviewRow => r !== null);
+  const totals = sumTotals([
+    ...reviews.map((r) => parseRunUsage(r.usage)?.totals),
+    parseRunUsage(coverage?.usage)?.totals,
+  ]);
+  return { totals, reviews: reviews.length, coverage_id: coverage?.id ?? null };
 }
 
 function ownRun(key: string, id: number): TicketRunRow | undefined {
@@ -262,6 +284,8 @@ export async function ticketGroupRoutes(app: FastifyInstance, opts: { deps?: Par
     if (!parsed.success || !body.success) return reply.code(400).send({ error: 'Invalid request body' });
     const key = parsed.data.key;
     const { requirementsText, branches, refresh = true } = body.data;
+    const refusal = budgetRefusal(body.data.ignoreBudget);
+    if (refusal) return reply.code(409).send(refusal);
     let reviewer: string;
     let model: string;
     let secondOpinion: SecondOpinionName | null;
@@ -327,11 +351,15 @@ export async function ticketGroupRoutes(app: FastifyInstance, opts: { deps?: Par
       };
       return applyGroupBases(key, [{ ...base, source: m.source }])[0]!;
     });
+    const { run: toReview, skipped } = body.data.reviewUnchanged
+      ? { run: planned, skipped: [] as SkippedTarget[] }
+      : await skipUnchanged(planned, () => key, deps.headOf);
+    for (const s of skipped) logger.info(`ticket ${key}: ${s.repo}#${s.branch} skipped, ${s.reason} (${s.head_sha.slice(0, 7)})`);
     const notes: string[] = [];
     const reviews: ReviewRow[] = [];
     try {
       // Parents first across every chain; a child waits in the queue for its parent's review.
-      for (const step of orderBatch(planned, () => key)) {
+      for (const step of orderBatch(toReview, () => key)) {
         const target = step.target;
         const parentIsMember = allMembers.some((p) => p.repo === target.repo && p.branch === target.baseBranch);
         if (parentIsMember) {
@@ -352,13 +380,16 @@ export async function ticketGroupRoutes(app: FastifyInstance, opts: { deps?: Par
       if (reviews.length === 0) return reply.code(400).send({ error: (err as Error).message });
       notes.push(`Stopped queueing after ${reviews.length} review(s): ${(err as Error).message}`);
     }
-    const run = createTicketRun(key, reviews.map((r) => r.id));
-    return reply.code(201).send({
-      run: runPayload(run),
+    // Nothing queued (every branch unchanged): no run, the latest coverage stands.
+    const run = reviews.length ? createTicketRun(key, reviews.map((r) => r.id)) : null;
+    return reply.code(reviews.length ? 201 : 200).send({
       reviews: reviews.map((r) => reviewJson(r)),
+      skipped,
       notes,
       ...(resolveError ? { resolve_warning: `The tracker lookup failed, so the stored branches were used: ${resolveError}` } : {}),
       ...ticketPayload(key, deps.pending),
+      // This batch's run, not the latest one the ticket payload carries; null when nothing was queued.
+      run: runPayload(run),
     });
   });
 

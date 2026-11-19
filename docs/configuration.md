@@ -47,7 +47,12 @@ truth for every default; `.env.example` lists each variable with its default.
 | `OCR_BIN` | no | `ocr` | Path to the Open Code Review CLI |
 | `SECOND_OPINION_TIMEOUT_MS` | no | `900000` | Timeout of the second-opinion process; `ocr` gets `--timeout` one minute shorter (whole minutes, at least 1), so it stops on its own and writes its partial output first |
 | `OCR_CONCURRENCY` | no | `3` | `ocr --concurrency` |
-| `OCR_TOKEN_BUDGET` | no | `800000` | `ocr --max-tokens-budget` |
+| `OCR_TOKEN_BUDGET` | no | `400000` | `ocr --max-tokens-budget` |
+| `LENS_MAX_TURNS` | no | `30` | Turn cap of a lens and of a re-anchor pass (Claude Code `--max-turns`; the other CLIs have no such flag) |
+| `SYNTHESIS_MAX_TURNS` | no | `45` | Turn cap of synthesis, the second-opinion conclusion, and ticket coverage |
+| `USAGE_WEIGHTS` | no | `input=1,cache_write=1.25,cache_read=0.1,output=5` | How tokens add up to the [weighted total](#usage-and-budget); keys left out keep their default |
+| `USAGE_BUDGET_WEIGHTED` | no | `0` (off) | Weighted tokens allowed per window; once spent, new reviews are refused (409) unless the request sets `ignoreBudget` |
+| `USAGE_WINDOW_HOURS` | no | `5` | The window the budget covers |
 | `COVERAGE_DEBOUNCE_MS` | no | `15000` | How long ticket coverage waits after a branch review of the group settles, so a batch is covered once |
 | `DOCKER_BIN` | no | `docker` | Path to the Docker CLI |
 | `GIT_IMAGE` | no | `code-review-tool-git:latest` | Sandbox image tag |
@@ -140,13 +145,30 @@ every review or pick it per review (the start form, `secondOpinion` in the API,
 the MCP tools). A provider that is not installed cannot be picked; as the env
 default it is skipped with a warning.
 
-`ocr` reviews test files too: the tool passes its own `--rule` file with the
-repository rules and the test paths included, so a `.opencodereview/rule.json`
-in the repository is not read.
+The tool passes its own `--rule` file with the repository rules, so a
+`.opencodereview/rule.json` in the repository is not read. Test files are left
+to `ocr`'s defaults (it skips them); the review itself reads them.
 
 The background file (the ticket text, its requirements and approved decisions)
 goes to whatever LLM vendor the provider is configured with, which may not be
 the vendor of your reviewer.
+
+## Usage and budget
+
+Every reviewer process reports its tokens (Claude Code, Cursor and Grok in
+their final `result` event, Codex in `turn.completed`); a run stores them per
+pass and in total, and the log ends with
+`usage: 9.4M read, 800k written, 110k out, weighted 2.1M, 8 processes`
+("read" is uncached input plus cache reads, "written" is cache writes). The
+weighted total is `input + cache_write * 1.25 + cache_read * 0.1 + output * 5`
+(`USAGE_WEIGHTS`). The second opinion reports only input and output tokens; its
+input is counted as cache writes.
+
+With `USAGE_BUDGET_WEIGHTED` set, `GET /api/usage` sums the reviews and
+coverage passes that finished in the last `USAGE_WINDOW_HOURS`; running ones
+count 0 until they end. Once the sum reaches the budget, new reviews, ticket
+batches and re-runs are refused with 409 unless the request sets
+`ignoreBudget: true`. Running reviews are never stopped.
 
 ## Repository rules and tool checks
 

@@ -11,6 +11,7 @@ import {
   updateReview,
 } from './db.js';
 import { config } from './config.js';
+import { UsageMeter, usageTotalsLine } from './usage.js';
 import { publish } from './events.js';
 import { sanitizeLogMessage } from './logSanitize.js';
 import { assertPristine, ensureImage, fetchCheckout, pruneCheckout } from './gitSandbox.js';
@@ -41,6 +42,8 @@ import type {
 interface Job {
   reviewId: number;
   controller: AbortController;
+  /** What the run has spent so far; stored however it ends. */
+  usage: UsageMeter;
 }
 
 const pending: number[] = [];
@@ -215,9 +218,9 @@ export async function stopAllReviews(reason: string, graceMs = 3_000): Promise<v
     status(reviewId, 'failed');
     closeSecondOpinion(reviewId, reason);
   }
-  for (const reviewId of running.keys()) {
+  for (const [reviewId, job] of running) {
     interrupted.add(reviewId);
-    finishRow(reviewId, { status: 'failed', error: reason, finished_at: at });
+    finishRow(reviewId, { status: 'failed', error: reason, finished_at: at, ...usagePatch(job.usage) });
     log(reviewId, 'error', `Interrupted: ${reason}.`);
     status(reviewId, 'failed');
     closeSecondOpinion(reviewId, reason);
@@ -282,11 +285,12 @@ async function worker(first: number): Promise<void> {
     while (next !== undefined) {
       const reviewId: number = next;
       const controller = new AbortController();
-      running.set(reviewId, { reviewId, controller });
+      const usage = new UsageMeter(config.USAGE_WEIGHTS);
+      running.set(reviewId, { reviewId, controller, usage });
       try {
-        await processReview(reviewId, controller.signal);
+        await processReview(reviewId, controller.signal, usage);
       } catch (err) {
-        handleFailure(reviewId, err);
+        handleFailure(reviewId, err, usage);
       } finally {
         running.delete(reviewId);
         cancelling.delete(reviewId);
@@ -301,7 +305,7 @@ async function worker(first: number): Promise<void> {
   }
 }
 
-async function processReview(reviewId: number, signal: AbortSignal): Promise<void> {
+async function processReview(reviewId: number, signal: AbortSignal, usage: UsageMeter): Promise<void> {
   const review = getReview(reviewId);
   if (!review) throw new Error(`Review ${reviewId} no longer exists`);
   if (review.status === 'cancelled') return;
@@ -400,6 +404,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
       checkContext,
       ...(checklist ? { checklist } : {}),
       ...(secondOpinion ? { secondOpinion } : {}),
+      usage,
     },
   );
   throwIfCancelled(signal);
@@ -435,6 +440,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
     report_path: reportPath,
     proposed_requirements: output.proposed_requirements?.length ? JSON.stringify(output.proposed_requirements) : null,
     ...(output.second_opinion ? { second_opinion: JSON.stringify(output.second_opinion) } : {}),
+    usage: JSON.stringify(output.usage),
     finished_at: nowIso(),
     error: null,
   });
@@ -447,6 +453,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
         ? ` (tool checks: ${output.toolChecks.findings.length} finding(s), ${output.toolChecks.observations.length} observation(s)).`
         : '.'),
   );
+  log(reviewId, 'info', `usage: ${usageTotalsLine(output.usage.totals)}`);
   publish(reviewId, {
     type: 'done',
     reviewId,
@@ -464,7 +471,7 @@ async function processReview(reviewId: number, signal: AbortSignal): Promise<voi
   }
 }
 
-function handleFailure(reviewId: number, err: unknown): void {
+function handleFailure(reviewId: number, err: unknown, usage: UsageMeter): void {
   // stopAllReviews already wrote the row; the error here is just the unwinding.
   if (interrupted.has(reviewId)) return;
   const cancelled = cancelling.has(reviewId);
@@ -475,8 +482,10 @@ function handleFailure(reviewId: number, err: unknown): void {
     status: finalStatus,
     error: cancelled ? 'cancelled' : message,
     finished_at: nowIso(),
+    ...usagePatch(usage),
   });
   log(reviewId, 'error', cancelled ? 'Cancelled.' : `Failed: ${message}`);
+  if (!usage.empty) log(reviewId, 'info', `usage: ${usageTotalsLine(usage.summary().totals)}`);
   status(reviewId, finalStatus);
   closeSecondOpinion(reviewId, cancelled ? 'cancelled' : 'the review failed');
   settleGroup(reviewId);
@@ -592,6 +601,11 @@ function loadPreviousFindings(repo: string, branch: string, runIndex: number): P
 
 function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new Error('Review cancelled');
+}
+
+/** A run that ends early still records what its processes spent; nothing when none ran. */
+function usagePatch(usage: UsageMeter): Partial<ReviewRow> {
+  return usage.empty ? {} : { usage: JSON.stringify(usage.summary()) };
 }
 
 function finishRow(reviewId: number, patch: Partial<ReviewRow>): void {

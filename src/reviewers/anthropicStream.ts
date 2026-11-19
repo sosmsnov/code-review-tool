@@ -1,4 +1,5 @@
 import type { OnLog } from '../types.js';
+import { usageFromResultEvent } from '../usage.js';
 import type { StreamLineResult } from './types.js';
 
 const MAX_LOG_CHARS = 600;
@@ -39,10 +40,15 @@ export function parseAnthropicStreamLine(line: string, onLog: OnLog): StreamLine
       return {};
     }
     case 'result': {
+      const usage = usageFromResultEvent(e);
+      const extra: StreamLineResult = {
+        ...(usage ? { usage } : {}),
+        ...(e.subtype === 'error_max_turns' || e.terminal_reason === 'max_turns' ? { turnCapReached: true } : {}),
+      };
       if (typeof e.result === 'string') {
-        return { result: e.result, isError: e.is_error === true || e.subtype !== 'success' };
+        return { result: e.result, isError: e.is_error === true || e.subtype !== 'success', ...extra };
       }
-      return { result: '', isError: true };
+      return { result: '', isError: true, ...extra };
     }
     default:
       return {};

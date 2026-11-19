@@ -6,6 +6,7 @@
 import { db } from './db.js';
 import { fallbackGroupKey } from './groupKey.js';
 import { orderChains } from './ticketChains.js';
+import type { RunUsage } from './usage.js';
 import type {
   ContractIssue, CoverageRequirement, CoverageVerdict, ParentReason, ReviewRow, ReviewSource, TicketBranchRow, TicketCoverageRow,
   TicketGroupRow, TicketRunRow,
@@ -243,6 +244,10 @@ export function finishCoverage(
     db.prepare(`UPDATE ticket_coverage SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`)
       .run(result.error.slice(0, 4000), now(), id);
   }
+}
+
+export function setCoverageUsage(id: number, usage: RunUsage): void {
+  db.prepare(`UPDATE ticket_coverage SET usage = ? WHERE id = ?`).run(JSON.stringify(usage), id);
 }
 
 /** Coverage rows left `running` by a process that is gone. */

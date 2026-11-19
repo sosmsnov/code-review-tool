@@ -35,6 +35,7 @@ import type {
   ReviewersPayload,
   TicketGroupPayload,
 } from '../types';
+import { usageTotalsLine } from '../usageView';
 
 const ACTIVE = new Set(['queued', 'fetching', 'reviewing']);
 
@@ -150,6 +151,12 @@ export default function TicketView({ ticketKey }: { ticketKey: string }) {
       </header>
 
       {notice && <p className="notice-line">{notice}</p>}
+      {ticket?.usage && ticket.usage.totals.processes > 0 && (
+        <p className="muted manual-hint">
+          Usage of the latest reviews ({ticket.usage.reviews}){ticket.usage.coverage_id ? ' and the coverage pass' : ''}:{' '}
+          <span className="mono">{usageTotalsLine(ticket.usage.totals)}</span>
+        </p>
+      )}
 
       {ticket && (
         <>
@@ -163,7 +170,14 @@ export default function TicketView({ ticketKey }: { ticketKey: string }) {
             onReview={(body) =>
               act(async () => {
                 const out = await api.reviewTicket(ticketKey, body);
-                const notes = [...(out.notes ?? []), ...(out.resolve_warning ? [out.resolve_warning] : [])];
+                const skipped = out.skipped ?? [];
+                const notes = [
+                  ...(skipped.length
+                    ? [`Skipped, unchanged since their last review: ${skipped.map((s) => `${s.repo}#${s.branch}`).join(', ')}.`]
+                    : []),
+                  ...(out.notes ?? []),
+                  ...(out.resolve_warning ? [out.resolve_warning] : []),
+                ];
                 return `Queued ${out.reviews.length} branch review(s).${notes.length ? ` ${notes.join(' ')}` : ''}`;
               })
             }

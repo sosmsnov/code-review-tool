@@ -10,6 +10,7 @@ import { z } from 'zod';
 // Names only: this module imports nothing (no config, no secrets).
 import { REVIEWER_NAMES } from '../reviewers/types.js';
 import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
+import type { SkippedTarget } from '../skipUnchanged.js';
 import type { ResolvedTarget, ReviewGroup, ReviewRow, TicketInfo } from '../types.js';
 import { ApiClient, ApiError, ApiNoAnswerError, ApiUnreachableError } from './client.js';
 import {
@@ -96,6 +97,12 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       'every comment against the code and only confirmed ones become findings (see list_reviewers for the providers). ' +
       '"none" turns it off. Default: the server default.',
   );
+  const ignoreBudgetSchema = z.boolean().optional().describe(
+    'Start even when the usage budget of the window (USAGE_BUDGET_WEIGHTED) is spent. Default false.',
+  );
+  const reviewUnchangedSchema = z.boolean().optional().describe(
+    'Several branches of a ticket: also review a branch whose head its latest finished review already saw. Default false.',
+  );
 
   server.registerTool('list_reviewers', {
     title: 'List reviewers',
@@ -163,8 +170,12 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       '- "local:my-service#feature/x" a branch of the local clone, pushed or not (see list_local_repos); ' +
       '"local:my-service" = the checked-out branch\n' +
       'Links may also use http://, www., or <...> around them. ' +
-      'When a ticket resolves to several branches, all of them are reviewed unless "targets" narrows it. ' +
-      'Returns {reviews:[{id, repo, branch, base, reviewer, model, status, url}]}.',
+      'When a ticket resolves to several branches, all of them are reviewed unless "targets" narrows it; a branch ' +
+      'whose head equals the head of its latest finished review in the ticket group (same base) is skipped unless ' +
+      'reviewUnchanged=true (a single branch is never skipped). When the usage budget of the window is spent the ' +
+      'call is refused (409) unless ignoreBudget=true. ' +
+      'Returns {reviews:[{id, repo, branch, base, reviewer, model, status, url}], skipped:[{repo, branch, head_sha, ' +
+      'review_id, reason}]}.',
     inputSchema: {
       input: z.string().min(1).max(512)
         .describe('Ticket key or issue link, PR URL, "org/repo#12", "repo#branch", or "local:repo#branch".'),
@@ -181,6 +192,8 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       targets: z.array(z.string().min(3).max(300)).min(1).max(20).optional()
         .describe('Ticket inputs only: review just these of the ticket\'s branches, each as "repo#branch".'),
       secondOpinion: secondOpinionSchema,
+      ignoreBudget: ignoreBudgetSchema,
+      reviewUnchanged: reviewUnchangedSchema,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (args) => guarded(async () => {
@@ -211,11 +224,16 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       ...(args.includeWorkingTree ? { includeWorkingTree: true } : {}),
       ...(args.requirementsText ? { requirementsText: args.requirementsText } : {}),
       ...(args.secondOpinion ? { secondOpinion: args.secondOpinion } : {}),
+      ...(args.ignoreBudget ? { ignoreBudget: true } : {}),
+      ...(args.reviewUnchanged ? { reviewUnchanged: true } : {}),
     };
-    const { reviews } = await api.createReviews<{ reviews: ReviewRow[] }>(body);
+    const { reviews, skipped = [] } = await api.createReviews<{ reviews: ReviewRow[]; skipped?: SkippedTarget[] }>(body);
     return ok({
       reviews: reviews.map((r) => reviewRef(r, api.reviewUrl(r.id))),
-      next: 'Reviews take several minutes. Call wait_for_review with each id until finished=true.',
+      skipped,
+      next: reviews.length
+        ? 'Reviews take several minutes. Call wait_for_review with each id until finished=true.'
+        : 'Nothing was queued: every branch is unchanged since its latest finished review (see skipped).',
     });
   }));
 
@@ -427,7 +445,8 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       'Start a new run of an existing review: same repo, branch, base, and ticket, optionally with another ' +
       'reviewer or model (a model id belongs to one reviewer; switching reviewer without a model uses that ' +
       "reviewer's default). Local reviews re-read the clone, so new commits are included. Returns the new " +
-      'review; poll it with wait_for_review.',
+      'review; poll it with wait_for_review. Refused (409) when the usage budget of the window is spent, unless ' +
+      'ignoreBudget=true.',
     inputSchema: {
       id: idSchema,
       reviewer: z.enum(REVIEWER_NAMES).optional(),
@@ -435,15 +454,17 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       secondOpinion: secondOpinionSchema.describe(
         'Second opinion for the new run: "none" or a provider. Default: the previous run\'s choice ("none" included); the server default for a run older than the stage.',
       ),
+      ignoreBudget: ignoreBudgetSchema,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, ({ id, reviewer, model, secondOpinion }) => guarded(async () => {
+  }, ({ id, reviewer, model, secondOpinion, ignoreBudget }) => guarded(async () => {
     const refused = refusal();
     if (refused) return fail(refused);
     const { review } = await api.rerun<{ review: ReviewRow }>(id, {
       ...(reviewer ? { reviewer } : {}),
       ...(model ? { model } : {}),
       ...(secondOpinion ? { secondOpinion } : {}),
+      ...(ignoreBudget ? { ignoreBudget: true } : {}),
     });
     return ok({
       review: reviewRef(review, api.reviewUrl(review.id)),
@@ -466,7 +487,11 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       '(set_branch_parent). Each branch gets a code_verdict from its own findings; once every queued branch is ' +
       'done, one coverage pass says per requirement which branch covers it. Returns at once with the run id and ' +
       'review ids; then call wait_for_ticket_review until finished=true. A branch whose parent has no finished ' +
-      'review yet is still run, with a note.',
+      'review yet is still run, with a note. A branch whose head equals the head of its latest finished review in ' +
+      'the group (same base) is skipped and listed in skipped [{repo, branch, head_sha, review_id, reason}] unless ' +
+      'reviewUnchanged=true; coverage still reads every branch\'s latest finished review. When every branch is ' +
+      'skipped nothing is queued and run is null. Refused (409) when the usage budget of the window is spent, ' +
+      'unless ignoreBudget=true.',
     inputSchema: {
       ticket: ticketSchema,
       reviewer: z.enum(REVIEWER_NAMES).optional().describe('Reviewer CLI (see list_reviewers).'),
@@ -478,6 +503,8 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       refresh: z.boolean().optional()
         .describe('Ask the tracker for the ticket\'s branches again (default true). false: only the stored group.'),
       secondOpinion: secondOpinionSchema,
+      ignoreBudget: ignoreBudgetSchema,
+      reviewUnchanged: reviewUnchangedSchema,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (args) => guarded(async () => {
@@ -490,19 +517,24 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       ...(args.branches ? { branches: args.branches } : {}),
       ...(args.refresh !== undefined ? { refresh: args.refresh } : {}),
       ...(args.secondOpinion ? { secondOpinion: args.secondOpinion } : {}),
+      ...(args.ignoreBudget ? { ignoreBudget: true } : {}),
+      ...(args.reviewUnchanged ? { reviewUnchanged: true } : {}),
     };
     const out = await api.startTicketReview<TicketPayload & {
-      run: TicketRunPayload; reviews: ReviewRow[]; notes?: string[]; resolve_warning?: string;
+      run: TicketRunPayload | null; reviews: ReviewRow[]; skipped?: SkippedTarget[]; notes?: string[]; resolve_warning?: string;
     }>(args.ticket, body);
     const ticket = compactTicket(out, { review: (id) => api.reviewUrl(id), ticket: api.ticketUrl(args.ticket) });
     return ok({
       run: out.run,
       reviews: out.reviews.map((r) => reviewRef(r, api.reviewUrl(r.id))),
+      skipped: out.skipped ?? [],
       notes: out.notes ?? [],
       ...(out.resolve_warning ? { warning: out.resolve_warning } : {}),
       chains: ticket.chains,
       page: ticket.page,
-      next: `Reviews take several minutes each. Call wait_for_ticket_review with ticket="${args.ticket}" and runId=${out.run.id} until finished=true.`,
+      next: out.run
+        ? `Reviews take several minutes each. Call wait_for_ticket_review with ticket="${args.ticket}" and runId=${out.run.id} until finished=true.`
+        : `Nothing was queued: every branch is unchanged since its latest finished review. get_ticket shows the current coverage.`,
     });
   }));
 

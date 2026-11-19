@@ -32,11 +32,12 @@ import { chooseModel, getReviewer } from './reviewers/index.js';
 import type { ReviewerDefinition } from './reviewers/types.js';
 import { loadPromptFile, renderChecklist, renderTemplate, requirementLabel, runPass, type ChecklistItem } from './reviewRunner.js';
 import { activeChecklist } from './ticketRequirements.js';
+import { UsageMeter, usageTotalsLine } from './usage.js';
 import { orderChains } from './ticketChains.js';
 import { groupHeads } from './ticketGroups.js';
 import {
   closeTicketRuns, createCoverage, finishCoverage, getCoverage, getTicketGroup, latestCoverage, latestDoneCoverage, listTicketBranches,
-  parseCoverageRequirements, parseIds, setCoverageModel, syncMembersFromReviews,
+  parseCoverageRequirements, parseIds, setCoverageModel, setCoverageUsage, syncMembersFromReviews,
 } from './ticketStore.js';
 import type {
   AnchorStatus, BaseEvidence, ContractIssue, CoverageBranch, CoverageEvidence, CoverageRequirement, CoverageStatus, OnLog, RequirementRow,
@@ -574,6 +575,7 @@ export async function runCoverage(key: string, opts: CoverageRunOptions = {}): P
 
   const workDir = path.join(config.DATA_DIR, 'coverage', sanitizeSegment(key), String(row.id));
   let reader: BaseReader | null = null;
+  const usage = new UsageMeter(config.USAGE_WEIGHTS);
   try {
     if (!opts.reviewerDefinition) {
       const chosen = await chooseModel(reviewer, {
@@ -608,6 +610,9 @@ export async function runCoverage(key: string, opts: CoverageRunOptions = {}): P
       model,
       timeoutMs: opts.timeoutMs ?? config.REVIEW_TIMEOUT_MS,
       signal: undefined,
+      usage,
+      pass: 'coverage',
+      maxTurns: config.SYNTHESIS_MAX_TURNS,
     };
     const { data } = inputs.checklist.length > 0
       ? await runPass('coverage', prompt, checklistCoverageOutputSchema, log, passOpts)
@@ -649,6 +654,11 @@ export async function runCoverage(key: string, opts: CoverageRunOptions = {}): P
     finishCoverage(row.id, { status: 'failed', error: message });
     log('error', `failed: ${message.split('\n')[0]}`);
   } finally {
+    if (!usage.empty) {
+      const spent = usage.summary();
+      setCoverageUsage(row.id, spent);
+      log('info', `usage: ${usageTotalsLine(spent.totals)}`);
+    }
     reader?.close();
     fs.rmSync(workDir, { recursive: true, force: true });
     settle();

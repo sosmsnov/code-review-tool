@@ -6,6 +6,7 @@ import { z } from 'zod';
 // registry imports this file, so it must never be imported back from here.
 import { REVIEWER_NAMES } from './reviewers/types.js';
 import { SECOND_OPINION_CHOICES } from './secondOpinion/types.js';
+import { parseUsageWeights } from './usage.js';
 
 // src/config.ts -> <root>/src, dist/config.js -> <root>/dist; the project root is one level up in both.
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -98,7 +99,22 @@ const schema = z.object({
   OCR_BIN: z.string().min(1).default('ocr'),
   SECOND_OPINION_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   OCR_CONCURRENCY: z.coerce.number().int().positive().default(3),
-  OCR_TOKEN_BUDGET: z.coerce.number().int().positive().default(800_000),
+  OCR_TOKEN_BUDGET: z.coerce.number().int().positive().default(400_000),
+  // --- usage accounting and the budget guard ---
+  USAGE_WEIGHTS: z.string().optional().transform((value, ctx) => {
+    try {
+      return parseUsageWeights(value);
+    } catch (err) {
+      ctx.addIssue({ code: 'custom', message: (err as Error).message });
+      return z.NEVER;
+    }
+  }),
+  // 0 turns the guard off.
+  USAGE_BUDGET_WEIGHTED: z.coerce.number().min(0).default(0),
+  USAGE_WINDOW_HOURS: z.coerce.number().positive().default(5),
+  // Turn caps per reviewer process: lenses and re-anchor; synthesis, conclusion and coverage.
+  LENS_MAX_TURNS: z.coerce.number().int().positive().default(30),
+  SYNTHESIS_MAX_TURNS: z.coerce.number().int().positive().default(45),
   // How long ticket coverage waits after a branch review settles, so a batch is covered once.
   COVERAGE_DEBOUNCE_MS: z.coerce.number().int().min(0).default(15_000),
   DOCKER_BIN: z.string().min(1).default('docker'),

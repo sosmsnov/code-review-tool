@@ -13,14 +13,14 @@ every tool returns an error saying so.
 | `list_reviewers` | | reviewer CLIs, whether each is installed, default model, model ids; `second_opinion`: the second-opinion providers and the default |
 | `list_local_repos` | `repo?`, `maxBranches?` (default 30) | local clones: repo name, path, checked-out branch, default base, dirty state, branches with unpushed / ahead / behind |
 | `detect_base` | `repo`, `branch` | the base a local branch would be diffed against (detected parent or default branch) |
-| `start_review` | `input`, `reviewer?`, `model?`, `baseBranch?`, `includeWorkingTree?`, `requirementsText?`, `targets?`, `secondOpinion?` | start a review of any [input](usage.md#inputs); a ticket with several branches starts one review per branch, unless `targets` (`["repo#branch", …]`) narrows it; returns the review ids at once |
-| `get_review` | `id`, `maxFindings?` (default 50) | status and, once done, verdict, `code_verdict`, `ticket_group` (the coverage seen from this branch), `can_merge`, requirements met/total (unmet ones with their checklist id), `proposed_requirements`, severity counts, findings (most severe first, capped; each with `kind`, `cause`, `anchor_status`, `lens` (`tool` for a tool check, `second_opinion` for a confirmed comment of the second opinion), and `corroborated` when the second opinion found it too); with a second opinion also `second_opinion` (`provider`, `status`, `comments_total`, `counts`, `primary_verdict`, `elapsed_ms`, `tokens_total`, `error`) |
+| `start_review` | `input`, `reviewer?`, `model?`, `baseBranch?`, `includeWorkingTree?`, `requirementsText?`, `targets?`, `secondOpinion?`, `ignoreBudget?`, `reviewUnchanged?` | start a review of any [input](usage.md#inputs); a ticket with several branches starts one review per branch, unless `targets` (`["repo#branch", …]`) narrows it, and skips the branches unchanged since their latest finished review (listed in `skipped`); returns the review ids at once |
+| `get_review` | `id`, `maxFindings?` (default 50) | status and, once done, verdict, `code_verdict`, `ticket_group` (the coverage seen from this branch), `can_merge`, requirements met/total (unmet ones with their checklist id), `proposed_requirements`, severity counts, findings (most severe first, capped; each with `kind`, `cause`, `anchor_status`, `lens` (`tool` for a tool check, `second_opinion` for a confirmed comment of the second opinion), and `corroborated` when the second opinion found it too); with a second opinion also `second_opinion` (`provider`, `status`, `comments_total`, `counts`, `primary_verdict`, `elapsed_ms`, `tokens_total`, `error`); once the run ended, `usage: { totals }` |
 | `wait_for_review` | `id`, `timeoutSec?` (default 50, max 600), `pollSec?` (default 5), `maxFindings?` | poll until the review finishes or `timeoutSec` passes; returns `finished`, call again while it is `false` |
 | `get_report` | `id`, `maxChars?` (default 40000) | the Markdown report of a finished review, truncated past `maxChars` |
 | `list_reviews` | `q?`, `repo?`, `ticket?`, `group?`, `status?`, `limit?` (default 20) | recent runs, newest first; `status` is one status or `active` |
 | `list_review_groups` | `q?`, `status?` (`active`, `failed`, `done`), `limit?` (default 10, max 50), `offset?` | the history grouped by ticket (see [Grouping](usage.md#the-web-ui)), with the latest run of each branch, paged |
 | `cancel_review` | `id` | cancel a queued or running review |
-| `start_ticket_review` | `ticket`, `reviewer?`, `model?`, `requirementsText?`, `branches?`, `refresh?`, `secondOpinion?` | review every branch of a ticket, parents first, each against its parent; returns the run id, the review ids, and notes |
+| `start_ticket_review` | `ticket`, `reviewer?`, `model?`, `requirementsText?`, `branches?`, `refresh?`, `secondOpinion?`, `ignoreBudget?`, `reviewUnchanged?` | review every branch of a ticket, parents first, each against its parent, skipping branches unchanged since their latest finished review; returns the run id, the review ids, `skipped`, and notes |
 | `wait_for_ticket_review` | `ticket`, `runId?`, `timeoutSec?` (default 50, max 600), `pollSec?`, `maxRequirements?` | poll until every run of the batch ended and its coverage was computed; returns `finished`, the chains with each branch's latest run and `code_verdict`, and the coverage |
 | `get_ticket` | `ticket`, `maxRequirements?` | the chains, the latest run per branch, the coverage, `coverage_pending`, and the latest run |
 | `get_ticket_coverage` | `ticket`, `recompute?`, `reviewer?`, `model?`, `maxRequirements?` | the coverage: verdict, and per requirement (by checklist id) its status and covering branches with evidence; `recompute: true` starts a pass |
@@ -28,7 +28,7 @@ every tool returns an error saying so.
 | `set_ticket_requirements` | `ticket` + one of `add`, `user`, `items` (`[{id?, text}]`) | edit the checklist (append, replace user items, or set the whole list) |
 | `derive_ticket_requirements` | `ticket`, `reviewer?`, `model?`, `timeoutSec?` | derive the checklist again and wait for it up to `timeoutSec` |
 | `set_branch_parent` | `ticket`, `repo`, `branch` + `parent`, or `order` (+ `root?`) | set one branch's parent (null = default branch), or make the repository one chain in the given order |
-| `rerun_review` | `id`, `reviewer?`, `model?`, `secondOpinion?` | run a review again, optionally with another reviewer, model, or second opinion (default: the previous run's choice, `none` included; the server default for a run older than the stage) |
+| `rerun_review` | `id`, `reviewer?`, `model?`, `secondOpinion?`, `ignoreBudget?` | run a review again, optionally with another reviewer, model, or second opinion (default: the previous run's choice, `none` included; the server default for a run older than the stage) |
 | `list_recipes` | | preview recipes: name, roles (role -> repo), database, ready timeout; `enabled` is false when previews are off |
 | `start_preview` | `recipe?`, `roles?` (`[{role, branch?, base?, local?}]`), `review_id?`, `ticket?`, `dump_mode?`, `reuse_live?` | start a [preview](previews.md#preview-environments-optional); a role runs a local branch with `branch: "local:<repo>#<branch>"` or `local: true`; `ticket` alone for a ticket group runs its preview plan (each repo's chain tip) and returns a live preview that already runs it (`reused: true`) unless `reuse_live: false`; returns the preview id at once |
 | `get_ticket_preview_plan` | `ticket`, `recipe?` | what `start_preview` with only this ticket would run: per role the chain tip, its `source` and `chain`, or the base branch (`used_base`); `live_preview` that already runs it, `other_live`, `notes` |
@@ -38,8 +38,11 @@ every tool returns an error saying so.
 | `list_previews` | `review_id?`, `ticket?`, `recipe?`, `status?` (one status or `live`), `limit?` (default 20) | recent previews, newest first |
 
 A review takes minutes, so the usual flow is `start_review`, then
-`wait_for_review` in a loop, then `get_review` or `get_report`. For a ticket
-split into several branches: `start_ticket_review`, `wait_for_ticket_review` in
+`wait_for_review` in a loop, then `get_review` or `get_report`. When the
+usage budget of the window is spent (see
+[Usage and budget](configuration.md#usage-and-budget)), the start tools are
+refused unless they pass `ignoreBudget: true`. For a ticket split into several
+branches: `start_ticket_review`, `wait_for_ticket_review` in
 a loop, then `get_ticket`. Review results
 carry each review's page URL in the web UI. A preview follows the same pattern:
 `start_preview`, `wait_for_preview` until `finished`, open `web_url` (or an

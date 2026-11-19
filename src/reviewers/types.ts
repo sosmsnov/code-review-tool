@@ -1,4 +1,5 @@
 import type { OnLog } from '../types.js';
+import type { PassUsage } from '../usage.js';
 
 /** Which CLI runs the multi-lens review pipeline. */
 export const REVIEWER_NAMES = ['claude', 'cursor', 'codex', 'grok'] as const;
@@ -33,6 +34,15 @@ export interface StreamLineResult {
   result?: string;
   /** True when that final answer is a failure, not an answer. */
   isError?: boolean;
+  /** Tokens the line reports; several lines of one process are summed. */
+  usage?: PassUsage;
+  /** The process stopped at its turn cap (`--max-turns`) instead of answering. */
+  turnCapReached?: boolean;
+}
+
+/** Per-pass limits a reviewer CLI may support; a CLI without the flag ignores them. */
+export interface PassLimits {
+  maxTurns?: number;
 }
 
 export interface ReviewerDefinition {
@@ -53,7 +63,7 @@ export interface ReviewerDefinition {
    */
   readonly acceptsUnlistedModels?: boolean;
   /** argv before the prompt text */
-  buildArgs(prompt: string, model: string, dir: string): string[];
+  buildArgs(prompt: string, model: string, dir: string, limits?: PassLimits): string[];
   buildChildEnv(): NodeJS.ProcessEnv;
   /** Parse one line of the CLI's stream, log progress, surface the answer. */
   parseStreamLine(line: string, onLog: OnLog): StreamLineResult;

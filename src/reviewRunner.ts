@@ -9,6 +9,7 @@ import { killProcessGroups, killProcessGroupsNow, type RecordedGroup } from './p
 import { getReviewer } from './reviewers/index.js';
 import { parseAnthropicStreamLine } from './reviewers/anthropicStream.js';
 import type { ReviewerDefinition } from './reviewers/types.js';
+import { addUsage, passUsageSuffix, UsageMeter, type PassUsage, type RunUsage } from './usage.js';
 import {
   anchorFindings, changedFilesFromPaths, checkAnchor, createAnchorContext, reanchorOutputSchema,
   type AnchorContext, type AnchorRunResult,
@@ -71,6 +72,8 @@ export interface RunReviewOptions {
    * Absent: the review is exactly the primary pipeline.
    */
   secondOpinion?: SecondOpinionRequest;
+  /** Collects every process's tokens; the caller keeps it so a failed run still has its usage. */
+  usage?: UsageMeter;
 }
 
 /** One item of a ticket's stored checklist, as a review evaluates it. */
@@ -484,6 +487,8 @@ export interface ReviewRunOutput extends ReviewOutput {
   toolChecks: ToolCheckRun;
   /** The second opinion's files and answers; absent when none was requested. */
   secondOpinionRaw?: SecondOpinionRaw;
+  /** Tokens per pass and in total. */
+  usage: RunUsage;
 }
 
 export interface PassOptions {
@@ -494,6 +499,11 @@ export interface PassOptions {
   signal: AbortSignal | undefined;
   /** This review's live reviewer processes; see `RunReviewOptions.onProcessGroups`. */
   groups?: ReviewGroupTracker;
+  /** The CLI's turn cap for this pass (`--max-turns` where the CLI has one). */
+  maxTurns?: number;
+  /** Where each process's tokens go, under `pass` (the pass label when absent). */
+  usage?: UsageMeter;
+  pass?: string;
 }
 
 /** The reviewer processes of one review, reported on every change. */
@@ -577,12 +587,13 @@ export async function runPass<T>(
 ): Promise<{ data: T; json: unknown }> {
   let lastRaw = '';
   let lastError = '';
+  const passOpts: PassOptions = opts.usage && !opts.pass ? { ...opts, pass: label } : opts;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const prompt = attempt === 1 ? basePrompt : correctivePrompt(basePrompt, lastError);
     if (attempt === 2) onLog('warn', `${label}: output was not valid JSON. Retrying once.`);
 
-    const raw = await spawnReviewer(prompt, opts, onLog);
+    const raw = await spawnReviewer(prompt, passOpts, onLog);
     lastRaw = raw;
 
     const json = extractJson(raw);
@@ -623,14 +634,16 @@ async function runLenses(
   return Promise.all(
     LENS_NAMES.map(async (lens): Promise<LensResult> => {
       const lensLog: OnLog = (level, message) => onLog(level, `[${lens}] ${message}`);
+      const lensOpts: PassOptions = { ...opts, pass: `lens:${lens}`, maxTurns: config.LENS_MAX_TURNS };
       onLog('info', `lens ${lens}: started`);
       try {
         const prompt = await buildLensPrompt(lens, vars);
-        const { data: output, json } = await runPass(`lens ${lens}`, prompt, lensOutputSchema, lensLog, opts);
+        const { data: output, json } = await runPass(`lens ${lens}`, prompt, lensOutputSchema, lensLog, lensOpts);
         onLog(
           'info',
           `lens ${lens}: ${countLabel(output.findings.length, 'finding')}, ` +
-            `${countLabel(output.observations.length, 'observation')}`,
+            `${countLabel(output.observations.length, 'observation')}` +
+            passUsageSuffix(opts.usage?.pass(`lens:${lens}`) ?? null),
         );
         return { lens, output, error: null, raw: json };
       } catch (err) {
@@ -671,7 +684,9 @@ export async function runReview(
     timeoutMs: opts.timeoutMs ?? config.REVIEW_TIMEOUT_MS,
     signal: opts.signal,
     groups: new ReviewGroupTracker(opts.onProcessGroups),
+    usage: opts.usage ?? new UsageMeter(config.USAGE_WEIGHTS),
   };
+  const synthesisOpts: PassOptions = { ...passOpts, pass: 'synthesis', maxTurns: config.SYNTHESIS_MAX_TURNS };
 
   onLog(
     'info',
@@ -697,7 +712,7 @@ export async function runReview(
   let output: ReviewOutput;
   let synthesisRaw: unknown;
   if (checklist) {
-    const pass = await runPass('synthesis', prompt, checklistReviewOutputSchema, synthesisLog, passOpts);
+    const pass = await runPass('synthesis', prompt, checklistReviewOutputSchema, synthesisLog, synthesisOpts);
     synthesisRaw = pass.json;
     const { proposed_requirements: proposed, requirements, ...rest } = pass.data;
     output = {
@@ -706,7 +721,7 @@ export async function runReview(
       proposed_requirements: dedupeProposals(proposed, checklist),
     };
   } else {
-    const pass = await runPass('synthesis', prompt, reviewOutputSchema, synthesisLog, passOpts);
+    const pass = await runPass('synthesis', prompt, reviewOutputSchema, synthesisLog, synthesisOpts);
     synthesisRaw = pass.json;
     output = pass.data as ReviewOutput;
   }
@@ -714,7 +729,8 @@ export async function runReview(
     'info',
     `synthesis: ${countLabel(output.findings.length, 'finding')}, ` +
       `${countLabel(output.observations.length, 'observation')}, ` +
-      `${countLabel(output.requirements.length, 'requirement')}`,
+      `${countLabel(output.requirements.length, 'requirement')}` +
+      passUsageSuffix(passOpts.usage!.pass('synthesis')),
   );
 
   const attributed = attributeLenses(output.findings as ReviewOutput['findings'], lensResults);
@@ -733,7 +749,7 @@ export async function runReview(
     { slice: Boolean(opts.slice) },
   );
   const material = { lensResults, synthesisRaw, reanchorRaw, anchors, toolChecks };
-  if (!opts.secondOpinion) return { ...primary, ...material };
+  if (!opts.secondOpinion) return { ...primary, ...material, usage: passOpts.usage!.summary() };
 
   const second = await runSecondOpinion({
     review,
@@ -747,7 +763,7 @@ export async function runReview(
     onLog,
     request: opts.secondOpinion,
   });
-  return { ...second.output, ...material, secondOpinionRaw: second.raw };
+  return { ...second.output, ...material, secondOpinionRaw: second.raw, usage: passOpts.usage!.summary() };
 }
 
 /**
@@ -760,7 +776,9 @@ export async function anchorWithReanchor(
   vars: PromptVars,
   passOpts: PassOptions,
   onLog: OnLog,
+  passName = 'reanchor',
 ): Promise<{ anchors: AnchorRunResult; reanchorRaw: unknown }> {
+  const reanchorOpts: PassOptions = { ...passOpts, pass: passName, maxTurns: config.LENS_MAX_TURNS };
   const reanchorLog: OnLog = (level, message) => onLog(level, `[re-anchor] ${message}`);
   let reanchorRaw: unknown = null;
   const anchors = await anchorFindings(
@@ -769,12 +787,14 @@ export async function anchorWithReanchor(
     async (findingsBlock) => {
       const reanchorPrompt = await buildReanchorPrompt(vars, findingsBlock);
       // One attempt: the pass is a bounded clean-up, never a second review.
-      const { data, json } = await runPass('re-anchor', reanchorPrompt, reanchorOutputSchema, reanchorLog, passOpts, 1);
+      const { data, json } = await runPass('re-anchor', reanchorPrompt, reanchorOutputSchema, reanchorLog, reanchorOpts, 1);
       reanchorRaw = json;
       return data;
     },
     (level, message) => onLog(level, message),
   );
+  const spent = passOpts.usage?.pass(passName) ?? null;
+  if (anchors.sent && spent) onLog('info', `${passName === 'reanchor' ? 're-anchor' : passName}: done${passUsageSuffix(spent)}`);
   return { anchors, reanchorRaw };
 }
 
@@ -891,26 +911,40 @@ export async function spawnReviewer(
   const { reviewer, model, dir, timeoutMs, signal } = opts;
   let result: string | null = null;
   let resultIsError = false;
+  let turnCapReached = false;
+  let usage: PassUsage | null = null;
   const onLine = (line: string) => {
     const handled = reviewer.parseStreamLine(line, onLog);
+    if (handled.usage) usage = addUsage(usage, handled.usage);
+    if (handled.turnCapReached) turnCapReached = true;
     if (handled.result !== undefined) {
       result = handled.result;
       resultIsError = handled.isError === true;
     }
   };
-  const exit = await spawnTracked({
-    bin: reviewer.bin,
-    // Built lazily: a cancelled or refused pass never builds its argv.
-    args: () => reviewer.buildArgs(prompt, model, dir),
-    cwd: dir,
-    env: () => reviewer.buildChildEnv(),
-    timeoutMs,
-    signal,
-    groups: opts.groups,
-    onStdoutLine: onLine,
-  });
+  let exit: TrackedExit;
+  try {
+    exit = await spawnTracked({
+      bin: reviewer.bin,
+      // Built lazily: a cancelled or refused pass never builds its argv.
+      args: () => reviewer.buildArgs(prompt, model, dir, opts.maxTurns ? { maxTurns: opts.maxTurns } : undefined),
+      cwd: dir,
+      env: () => reviewer.buildChildEnv(),
+      timeoutMs,
+      signal,
+      groups: opts.groups,
+      onStdoutLine: onLine,
+    });
+  } finally {
+    // A process that failed or was killed still spent what it reported.
+    if (opts.usage && opts.pass) {
+      const spent = usage as PassUsage | null;
+      opts.usage.record(opts.pass, spent ? { ...spent, model: spent.model ?? (model || null) } : null);
+    }
+  }
   const answer = result as string | null;
   if (answer !== null && !resultIsError) return answer;
+  if (turnCapReached) throw new Error(`turn cap reached (${opts.maxTurns ?? 'CLI default'} turns) without an answer`);
   if (answer !== null && resultIsError) {
     throw new Error(`The review model reported an error: ${String(answer).slice(0, 2000)}`);
   }

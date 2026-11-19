@@ -353,6 +353,11 @@ table.grid tr:last-child td { border-bottom: none; }
 .meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .meta a, .banner-sub a { text-underline-offset: 3px; }
 .summary { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.usage-passes { margin-top: var(--space-3); font-size: var(--fs-xs); }
+.usage-passes summary { cursor: pointer; color: var(--fg-faint); }
+.usage-table { width: 100%; margin-top: var(--space-2); border-collapse: collapse; }
+.usage-table th, .usage-table td { padding: 2px var(--space-2); text-align: right; border-bottom: 1px solid var(--border); }
+.usage-table th:first-child, .usage-table td:first-child { text-align: left; }
 
 /* Badges and pills */
 .badge {

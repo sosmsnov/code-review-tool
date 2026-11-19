@@ -15,7 +15,8 @@ import { countsLine, formatElapsed, formatTokens } from './format.js';
 import { buildBackground, buildRuleFile } from './files.js';
 import { secondOpinionNotInstalled } from './index.js';
 import { pendingState } from './state.js';
-import type { SecondOpinionProvider, SecondOpinionResult, SecondOpinionState } from './types.js';
+import type { SecondOpinionProvider, SecondOpinionResult, SecondOpinionState, SecondOpinionTokens } from './types.js';
+import { passUsageSuffix, type PassUsage } from '../usage.js';
 
 export interface SecondOpinionRequest {
   provider: SecondOpinionProvider;
@@ -78,6 +79,17 @@ export function providerLine(result: SecondOpinionResult, elapsedMs: number): st
   parts.push(formatElapsed(elapsedMs));
   if (result.partial) parts.push('partial');
   return parts.join(', ');
+}
+
+/**
+ * The provider reports only input and output tokens, so its whole input is
+ * counted as written to the cache: an upper bound that keeps it comparable
+ * with the reviewer passes, whose fresh prompts are cache writes.
+ */
+export function secondOpinionUsage(tokens: SecondOpinionTokens, model?: string): PassUsage {
+  const output = tokens.output || 0;
+  const input = tokens.input || Math.max(0, (tokens.total || 0) - output);
+  return { input: 0, cache_read: 0, cache_write: input, output, cost_usd: null, model: model ?? null };
 }
 
 function firstLine(text: string): string {
@@ -192,6 +204,7 @@ export async function runSecondOpinion(ctx: SecondOpinionContext): Promise<Secon
       );
     }
 
+    if (result.tokens) passOpts.usage?.record('second_opinion', secondOpinionUsage(result.tokens, result.model));
     const elapsed = result.elapsed_ms ?? Date.now() - providerStarted;
     const sorted = sortComments(result.comments);
     onLog('info', `second opinion ${name}: ${providerLine(result, elapsed)}`);
@@ -220,14 +233,15 @@ export async function runSecondOpinion(ctx: SecondOpinionContext): Promise<Secon
     try {
       const prompt = await buildConclusionPrompt(ctx.vars, primary, sent);
       const { data, json } = await runPass(
-        'conclusion', prompt, conclusionOutputSchema(primary.findings.length), conclusionLog, passOpts,
+        'conclusion', prompt, conclusionOutputSchema(primary.findings.length), conclusionLog,
+        { ...passOpts, pass: 'conclusion', maxTurns: config.SYNTHESIS_MAX_TURNS },
       );
       raw.conclusion = json;
       merged = mergeAssessments(sorted, sent.length, data, primary.findings.length, conclusionLog);
       let added = merged.findings;
       if (added.length) {
         const anchorCtx = createAnchorContext(checkout.dir, checkoutChangedFiles(checkout));
-        const anchored = await anchorWithReanchor(anchorCtx, added, ctx.vars, passOpts, onLog);
+        const anchored = await anchorWithReanchor(anchorCtx, added, ctx.vars, passOpts, onLog, 'conclusion.reanchor');
         added = anchored.anchors.findings;
         if (anchored.reanchorRaw !== null) raw.reanchor = anchored.reanchorRaw;
       }
@@ -247,7 +261,7 @@ export async function runSecondOpinion(ctx: SecondOpinionContext): Promise<Secon
       return fail('conclusion', (err as Error).message);
     }
 
-    onLog('info', `conclusion: ${countsLine(merged.counts)}`);
+    onLog('info', `conclusion: ${countsLine(merged.counts)}${passUsageSuffix(passOpts.usage?.pass('conclusion') ?? null)}`);
     update({
       status: 'done',
       comments: merged.comments,

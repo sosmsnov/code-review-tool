@@ -1,4 +1,5 @@
 import type { SecondOpinionState } from './secondOpinion/types.js';
+import type { RunUsage } from './usage.js';
 
 export type ReviewStatus = 'queued' | 'fetching' | 'reviewing' | 'done' | 'failed' | 'cancelled';
 export type Verdict = 'approve' | 'changes_requested' | 'blocked';
@@ -143,6 +144,8 @@ export interface ReviewOutput {
   proposed_requirements?: ProposedRequirement[];
   /** Set by the runner when the review had a second opinion. */
   second_opinion?: SecondOpinionState | null;
+  /** Set by the runner: what each pass spent. */
+  usage?: RunUsage;
 }
 
 /** A requirement a review suggests adding to the ticket's checklist. */
@@ -218,6 +221,8 @@ export interface ReviewRow {
   proposed_requirements: string | null;
   /** JSON `SecondOpinionState`; NULL when no second opinion was requested, and on older rows. */
   second_opinion: string | null;
+  /** JSON `RunUsage` (usage.ts), written when the run ends; NULL while it runs and on older rows. */
+  usage: string | null;
 }
 
 /** `active`: a run is queued/fetching/reviewing; `failed`: some branch's latest run failed; `done`: see db.ts. */
@@ -506,6 +511,8 @@ export interface TicketCoverageRow {
   finished_at: string | null;
   /** JSON array of `ContractIssue`; null on rows written before the contract check. */
   contract_json: string | null;
+  /** JSON `RunUsage` of the pass; null while it runs and on older rows. */
+  usage: string | null;
 }
 
 /** One end of a cross-repository contract mismatch, checked like a finding anchor. */

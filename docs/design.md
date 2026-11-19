@@ -320,7 +320,7 @@ Anything else throws.
 
 A reviewer is a `ReviewerDefinition`: a name (`claude`, `cursor`, `codex`,
 `grok`), a label, a binary, the configured default model and its env key,
-`buildArgs(prompt, model, dir)`, `buildChildEnv()`, `parseStreamLine()`,
+`buildArgs(prompt, model, dir, limits?)`, `buildChildEnv()`, `parseStreamLine()`,
 `discoverModels()`, `isAvailable()`, and
 `describeFailure()` for a human hint on known failures (mostly "not logged
 in"). `reviewers/index.ts` is the registry; `DEFAULT_REVIEWER` picks the
@@ -352,6 +352,15 @@ default.
 - **Streams.** Claude Code, Cursor Agent, and the Grok CLI share the
   Anthropic-style `stream-json` events (`anthropicStream.ts`); Codex speaks its
   own JSONL (`codexStream.ts`), where the answer is the last `agent_message`.
+  A parsed line may carry `usage` (the `result` event's `usage`, cost and
+  model; Codex's `turn.completed`, whose `input_tokens` include the cached
+  ones) and `turnCapReached` (`subtype: error_max_turns`).
+- **Turn caps.** `limits.maxTurns` becomes Claude Code's `--max-turns`; Cursor
+  Agent, Codex and the Grok CLI have no such flag (checked in their `--help`)
+  and ignore it. Lenses and re-anchor get `LENS_MAX_TURNS`; synthesis, the
+  conclusion and coverage get `SYNTHESIS_MAX_TURNS`. A process stopped by the
+  cap fails its pass with `turn cap reached (N turns) without an answer`; the
+  corrective retry stays reserved for answers that are not valid JSON.
 - **Re-runs.** `resolveRerunChoice()` keeps the previous reviewer unless one is
   named, and keeps the previous model only while the reviewer stays the same: a
   model id belongs to one CLI, so a Claude alias is never handed to Codex.
@@ -431,6 +440,18 @@ the last fenced `json` block, falling back to the last balanced `{...}`, and
 validated with zod; on failure the pass retries once with a corrective prompt,
 then throws. `REVIEW_TIMEOUT_MS` bounds each process, and the process group is
 killed (SIGKILL) on timeout or cancel.
+
+**Usage (`src/usage.ts`).** `spawnReviewer()` sums the usage lines of its
+process and records them, even when the process fails or is killed, in the
+pass's `UsageMeter` under `PassOptions.pass`: `lens:<name>`, `synthesis`,
+`reanchor`, `second_opinion`, `conclusion`, `conclusion.reanchor` (a retry adds
+to the same pass). The queue owns the meter, so a failed or cancelled run still
+stores what it spent. `reviews.usage` holds `{ passes: [{ name, usage,
+weighted, processes }], totals }`; `weighted` uses `USAGE_WEIGHTS`. Pass log
+lines end with `(1.2M read, 90k written, 8k out)`, and the run with
+`usage: ... weighted 2.1M, 8 processes`. The coverage pass stores its own in
+`ticket_coverage.usage`. `budget.ts` sums the window for `GET /api/usage` and
+the 409 guard of the start routes.
 
 **Process groups and shutdown.** Because every reviewer CLI leads its own
 process group, a signal sent to the server or the CLI never reaches it. The
@@ -573,8 +594,8 @@ the primary result is normalised, still inside the review (status
    The tool writes, under `<DATA_DIR>/second-opinion/<review id>/` and never in
    the checkout, a background file (ticket, stored checklist, approved
    decisions, slice scope, then the ticket text, trimmed first at 8,000
-   characters) and a rule file (the repository rules for `**/*`, plus an
-   `include` of test paths, which `ocr` skips by default). The output is parsed
+   characters) and a rule file (the repository rules for `**/*`; test files
+   stay excluded as `ocr` does by default). The output is parsed
    leniently (unknown severities kept, missing lines are 1). Its `[ocr]` stderr
    lines go to the log as `second opinion: ...`, without the per-tool-call
    lines. The process is started with `spawnTracked()`, the same tracking as
@@ -832,6 +853,7 @@ CREATE TABLE ticket_requirements (
 -- requirements gains requirement_id INTEGER, reviews gains proposed_requirements TEXT (JSON); NULL on older rows.
 -- ticket_coverage gains contract_json TEXT (JSON: [{ problem, severity, sites: [{ repo, branch, file, line, anchor_status }] }]).
 -- reviews gains second_opinion TEXT (JSON, see "Second opinion"), findings gains corroborated INTEGER (1 or NULL).
+-- reviews and ticket_coverage gain usage TEXT (JSON RunUsage, see "Review runner"); NULL while running and on older rows.
 ```
 
 The tables are created with `IF NOT EXISTS` and the columns with
@@ -866,6 +888,14 @@ branch); `wouldCycle()`; `linearParents()` for a hand-made order; and
   hand-set parent, `default`), unless the caller chose a base explicitly.
 - `setParentByHand()` and `setChainOrder()` refuse loops and unknown branches.
 - `ticketGroupView()` is what the ticket page and `get_ticket` show.
+- `skipUnchanged()` (`skipUnchanged.ts`) runs in the ticket paths (a ticket
+  review, and `POST /api/reviews` with several targets of a ticket) once the
+  bases are applied: a target whose head (the local branch tip, or
+  `git ls-remote` in the sandbox) equals `head_sha` of its branch's latest
+  `done` review in the group, with the same base branch, is not queued but
+  returned in `skipped`. Uncommitted changes, an unreadable head, or
+  `reviewUnchanged: true` mean it is reviewed. Coverage needs nothing else: it
+  already reads every member's latest finished review.
 
 ### Requirement checklist (`ticketRequirements.ts`, `requirements.ts`, `prompts/requirements.md`)
 
@@ -1118,7 +1148,8 @@ fields explicitly and are unaffected.
 
 The report opens with the verdict, then a meta table (ticket, repository, the
 source and base reason for local runs, branch with head and base shas, diff
-size, and the run: number, timestamp, reviewer, model), `## Summary`,
+size, and the run: number, timestamp, reviewer, model), `## Usage` (the
+totals line and one row per pass; when the run has usage), `## Summary`,
 `## Ticket requirements` as a table with status icons (met ✅, partial ⚠️,
 missing ❌, not_verifiable ❓), `## Issues to fix` ordered by severity with
 `file:line` (with the kind label and an anchor warning when there is one),
@@ -1144,7 +1175,9 @@ Dark-first, compact. What each page offers is described in
   `/api/health` reports. A ticket-key input calls `GET /api/tickets/<input>`
   first and shows the ticket, a chip naming the tracker that answered, and the
   branches with checkboxes; the chosen targets are posted. **Paste requirements
-  instead** sends `requirementsText` and skips the ticket lookup. The history
+  instead** sends `requirementsText` and skips the ticket lookup. Under the
+  form, `GET /api/usage` shows `used / budget` for the window, a 409 shows its
+  message, and skipped unchanged branches are named. The history
   has two views, **By ticket** (`/api/review-groups`, 20 groups a page) and
   **All runs** (`/api/reviews`, 25 a page); the chosen view is remembered, and
   both refresh every 4 s while something on screen is running. A group row is
@@ -1160,7 +1193,8 @@ Dark-first, compact. What each page offers is described in
   named under the field, and resolved like a key.
 - **Review detail** (`/review/:id`) — verdict banner with GitHub links and the
   ticket in its tracker ("Open in Linear", labelled from the `ticket_url` host),
-  meta table, requirements, findings by severity (a non-diff finding shows a
+  meta table (with a Usage row and a collapsed per-pass usage table),
+  requirements, findings by severity (a non-diff finding shows a
   kind badge and "caused by `file:line`", a bad anchor a warning tag; the hunk
   header is the location's tooltip; a tool-check finding or observation a
   `tool` badge), observations, the comparison
@@ -1168,7 +1202,8 @@ Dark-first, compact. What each page offers is described in
   download report, copy report, delete (confirmed, and only once the run has
   ended, as the API refuses an active one).
 - **Ticket view** (`/ticket/:key`) — the ticket group (`GET
-  /api/ticket-groups/:key`): chains with parents, drag or ↑ ↓ (`PUT .../order`,
+  /api/ticket-groups/:key`): the usage line of the latest finished reviews and
+  coverage pass, chains with parents, drag or ↑ ↓ (`PUT .../order`,
   a linear chain), a parent menu per branch (`PUT .../parent`), the latest run
   and code verdict per branch, the coverage table, and Review ticket /
   Recompute coverage / Re-detect order / Preview ticket (when previews are

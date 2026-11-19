@@ -25,6 +25,7 @@ import {
 } from '../runView';
 import { fmtClock } from '../time';
 import { openTicketLabel, openTicketTitle } from '../tickets';
+import { fmtTokens, usageTotalsLine } from '../usageView';
 import type {
   AssessmentVerdict,
   BranchCoverageLine,
@@ -481,12 +482,45 @@ export default function ReviewDetail({ id }: { id: number }) {
             </dd>
             <dt>Model</dt>
             <dd className="mono">{review.model ?? '—'}</dd>
+            <dt>Usage</dt>
+            <dd className={review.usage ? 'mono' : 'mono muted'}>
+              {review.usage ? usageTotalsLine(review.usage.totals) : running ? 'counted when the run ends' : '-'}
+            </dd>
             <dt>Started</dt>
             <dd className="muted">
               {fmtTime(review.started_at ?? review.created_at)} ·{' '}
               {fmtDuration(review.started_at, review.finished_at)}
             </dd>
           </dl>
+          {review.usage && review.usage.passes.length > 0 && (
+            <details className="usage-passes">
+              <summary>Usage per pass</summary>
+              <table className="usage-table">
+                <thead>
+                  <tr>
+                    <th>Pass</th>
+                    <th>Processes</th>
+                    <th>Read</th>
+                    <th>Written</th>
+                    <th>Out</th>
+                    <th>Weighted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {review.usage.passes.map((p) => (
+                    <tr key={p.name}>
+                      <td className="mono">{p.name}</td>
+                      <td>{p.processes ?? '-'}</td>
+                      <td>{p.usage ? fmtTokens(p.usage.input + p.usage.cache_read) : '-'}</td>
+                      <td>{p.usage ? fmtTokens(p.usage.cache_write) : '-'}</td>
+                      <td>{p.usage ? fmtTokens(p.usage.output) : '-'}</td>
+                      <td>{fmtTokens(p.weighted)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          )}
           {review.summary && <p className="summary">{review.summary}</p>}
         </Card>
 
@@ -1039,12 +1073,6 @@ function fmtElapsedMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return '-';
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-  return String(n);
 }
 
 function commentLocation(c: SecondOpinionComment): string {

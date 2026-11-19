@@ -7,7 +7,8 @@ import { navigate } from '../router';
 import { modelSourceText, noModelsNotice, pickModel, rememberedModel } from '../modelChoice';
 import { readStored, writeStored } from '../storage';
 import { TRACKER_LABEL, ticketLinkRef } from '../tickets';
-import type { Health, LocalRepo, ResolvedTarget, ReviewerInfo, ReviewersPayload, TicketInfo } from '../types';
+import type { Health, LocalRepo, ResolvedTarget, ReviewerInfo, ReviewersPayload, TicketInfo, UsageWindow } from '../types';
+import { usageWindowLine } from '../usageView';
 
 const TICKET_RE = /^(?:[a-z]+:)?[a-z][a-z0-9_]*-\d+$/i;
 /** A GitHub issue reference, the one ticket shape that is always available. */
@@ -27,6 +28,8 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usageWindow, setUsageWindow] = useState<UsageWindow | null>(null);
+  const [skippedNote, setSkippedNote] = useState<string | null>(null);
   const [ticket, setTicket] = useState<TicketInfo | null>(null);
   const [targets, setTargets] = useState<ResolvedTarget[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
@@ -203,6 +206,11 @@ export default function Home() {
       .catch(() => setTrackers(null));
   }, []);
 
+  const refreshUsage = (): void => {
+    api.usage().then(setUsageWindow).catch(() => setUsageWindow(null));
+  };
+  useEffect(refreshUsage, []);
+
   useEffect(() => {
     api
       .reviewers()
@@ -286,9 +294,10 @@ export default function Home() {
     const value = mode === 'local' ? localInput() : resolvedKey ?? input.trim();
     if (!value) return;
     setError(null);
+    setSkippedNote(null);
     setBusy(true);
     try {
-      const { reviews } = await api.createReviews({
+      const { reviews, skipped = [] } = await api.createReviews({
         input: value,
         ...(chosen ? { targets: chosen } : {}),
         ...(manualText ? { requirementsText: manualText } : {}),
@@ -298,13 +307,17 @@ export default function Home() {
         ...(mode === 'local' && localBase.trim() ? { baseBranch: localBase.trim() } : {}),
         ...(secondOpinionProviders.length ? { secondOpinion } : {}),
       });
-      if (reviews.length === 1) navigate(`/review/${reviews[0]!.id}`);
+      if (skipped.length) {
+        setSkippedNote(`Skipped, unchanged since their last review: ${skipped.map((s) => `${s.repo}#${s.branch}`).join(', ')}.`);
+      }
+      if (reviews.length === 1 && !skipped.length) navigate(`/review/${reviews[0]!.id}`);
       else if (reviews[0]?.ticket_key) navigate(`/ticket/${encodeURIComponent(reviews[0].ticket_key)}`);
       else setHistoryToken((n) => n + 1);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
+      refreshUsage();
     }
   };
 
@@ -526,6 +539,8 @@ export default function Home() {
         )}
       </div>
 
+      {usageWindow && <p className="muted manual-hint">Usage: {usageWindowLine(usageWindow)}</p>}
+      {skippedNote && <p className="notice-line">{skippedNote}</p>}
       {error && <p className="error-line">{error}</p>}
 
       {ticket && (

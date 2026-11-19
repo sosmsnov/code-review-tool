@@ -246,6 +246,9 @@ export function migrate(): void {
     // The second opinion stage (JSON) and the primary findings it corroborated; NULL when it did not run.
     ensureColumn('reviews', 'second_opinion', `ALTER TABLE reviews ADD COLUMN second_opinion TEXT`);
     ensureColumn('findings', 'corroborated', `ALTER TABLE findings ADD COLUMN corroborated INTEGER`);
+    // What a run spent (JSON RunUsage); NULL while it runs and on older rows.
+    ensureColumn('reviews', 'usage', `ALTER TABLE reviews ADD COLUMN usage TEXT`);
+    ensureColumn('ticket_coverage', 'usage', `ALTER TABLE ticket_coverage ADD COLUMN usage TEXT`);
     // After ensureColumn: on an older database the column only exists from here on.
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_reviews_group ON reviews(group_key, created_at)`).run();
     syncGroupKeys();
@@ -291,7 +294,7 @@ const REVIEW_COLUMNS = [
   'files_changed', 'additions', 'deletions', 'created_at', 'started_at', 'finished_at',
   'source', 'working_tree', 'base_reason', 'group_key',
   'runner_pid', 'runner_started_at', 'reviewer_pgids', 'code_verdict', 'code_can_merge', 'depends_on',
-  'proposed_requirements', 'second_opinion',
+  'proposed_requirements', 'second_opinion', 'usage',
 ] as const satisfies readonly (keyof ReviewRow)[];
 
 /** Columns group_key is derived from; changing one of them re-derives it. */
@@ -325,7 +328,7 @@ export function createReview(input: CreateReviewInput): ReviewRow {
     // the first moment: no other process's recovery can see it unowned.
     runner_pid: SELF.pid, runner_started_at: SELF.startedAt, reviewer_pgids: null,
     code_verdict: null, code_can_merge: null, depends_on: null, proposed_requirements: null,
-    second_opinion: null,
+    second_opinion: null, usage: null,
   };
   for (const column of REVIEW_COLUMNS) {
     const value = (input as Record<string, unknown>)[column];

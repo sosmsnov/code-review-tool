@@ -42,6 +42,9 @@ import {
   parseSecondOpinionState, storedChoice, storedSecondOpinionChoice, summarizeSecondOpinion,
 } from '../secondOpinion/state.js';
 import { SECOND_OPINION_CHOICES } from '../secondOpinion/types.js';
+import { budgetRefusal, usageWindow } from '../budget.js';
+import { skipUnchanged, type HeadLookup, type SkippedTarget } from '../skipUnchanged.js';
+import { parseRunUsage } from '../usage.js';
 import type { ProposedRequirement, RequirementRow, ResolvedTarget, ReviewRow, TicketInfo } from '../types.js';
 
 const ACTIVE = new Set(['queued', 'fetching', 'reviewing']);
@@ -68,6 +71,10 @@ const createBody = z.object({
   baseBranch: z.string().min(1).max(255).optional(),
   // A second opinion after the review; absent → SECOND_OPINION.
   secondOpinion: z.enum(SECOND_OPINION_CHOICES).optional(),
+  // Start even when the window's usage budget is spent.
+  ignoreBudget: z.boolean().optional(),
+  // Several branches of a ticket: review a branch whose head its latest finished review already saw.
+  reviewUnchanged: z.boolean().optional(),
 });
 
 // Optional overrides for a re-run; an absent or empty body keeps the old run's choice.
@@ -75,6 +82,7 @@ const rerunBody = z.object({
   reviewer: z.enum(REVIEWER_NAMES).optional(),
   model: z.string().min(1).max(64).optional(),
   secondOpinion: z.enum(SECOND_OPINION_CHOICES).optional(),
+  ignoreBudget: z.boolean().optional(),
 });
 
 const listQuery = z.object({
@@ -135,12 +143,17 @@ export function startRun(
 }
 
 /**
- * A review row as every route serves it: `second_opinion` parsed (null when
- * none was requested), or only its summary for a list.
+ * A review row as every route serves it: `second_opinion` and `usage` parsed
+ * (null when none), or for a list the stage's summary and `usage_weighted`.
  */
 export function reviewJson(row: ReviewRow, opts: { summary?: boolean } = {}) {
   const state = parseSecondOpinionState(row.second_opinion);
-  return { ...row, second_opinion: opts.summary ? summarizeSecondOpinion(state) : state };
+  const usage = parseRunUsage(row.usage);
+  if (opts.summary) {
+    const { usage: _stored, ...rest } = row;
+    return { ...rest, second_opinion: summarizeSecondOpinion(state), usage_weighted: usage?.totals.weighted ?? null };
+  }
+  return { ...row, second_opinion: state, usage };
 }
 
 function reportAbsPath(row: ReviewRow): string | null {
@@ -151,11 +164,20 @@ function reportAbsPath(row: ReviewRow): string | null {
   return abs;
 }
 
-export async function reviewRoutes(app: FastifyInstance): Promise<void> {
+export interface ReviewRouteOptions {
+  /** How a ticket batch reads each branch's head; for tests. */
+  headOf?: HeadLookup;
+}
+
+export async function reviewRoutes(app: FastifyInstance, opts: ReviewRouteOptions = {}): Promise<void> {
+  app.get('/api/usage', async () => usageWindow());
+
   app.post('/api/reviews', async (req, reply) => {
     const parsed = createBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request body' });
     const { input, targets, requirementsText, includeWorkingTree, baseBranch } = parsed.data;
+    const refusal = budgetRefusal(parsed.data.ignoreBudget);
+    if (refusal) return reply.code(409).send(refusal);
 
     // The model and the second opinion are checked before anything is resolved or queued.
     let reviewer: string;
@@ -203,6 +225,12 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       req.log?.warn?.(`ticket group: ${(err as Error).message}`);
     }
 
+    // A batch of a ticket's branches leaves out the ones its latest finished reviews already saw.
+    let skipped: SkippedTarget[] = [];
+    if (chosen.length > 1 && !parsed.data.reviewUnchanged) {
+      ({ run: chosen, skipped } = await skipUnchanged(chosen, (t) => ticketGroupOf(t, ticket), opts.headOf));
+    }
+
     try {
       // Parents first; a child waits in the queue until its parent's review has ended.
       const reviews: ReviewRow[] = [];
@@ -216,7 +244,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       }
       // A batch of several branches of one ticket is a ticket run, so wait_for_ticket_review follows it.
       for (const [key, ids] of byGroup) if (ids.length > 1) createTicketRun(key, ids);
-      return reply.code(201).send({ reviews: reviews.map((r) => reviewJson(r)) });
+      return reply.code(reviews.length ? 201 : 200).send({ reviews: reviews.map((r) => reviewJson(r)), skipped });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -331,6 +359,8 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
 
     const body = rerunBody.safeParse(req.body ?? {});
     if (!body.success) return reply.code(400).send({ error: 'Invalid request body' });
+    const refusal = budgetRefusal(body.data.ignoreBudget);
+    if (refusal) return reply.code(409).send(refusal);
 
     let review: ReviewRow;
     try {

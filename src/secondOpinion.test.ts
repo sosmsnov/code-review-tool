@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crt-second-opinion-'));
 process.env.DATA_DIR = path.join(root, 'data');
 
-const { buildBackground, buildRuleFile, MAX_BACKGROUND_CHARS, RULE_INCLUDE } = await import('./secondOpinion/files.js');
+const { buildBackground, buildRuleFile, MAX_BACKGROUND_CHARS } = await import('./secondOpinion/files.js');
 const { buildOcrArgs, createOcrProvider, forwardOcrLine, parseElapsed, parseOcrOutput } = await import('./secondOpinion/ocr.js');
 const {
   conclusionOutputSchema, mergeAssessments, MAX_ASSESSED_COMMENTS, parseFindingNumber, renderPrimaryFindings, renderSecondOpinionComments, sortComments,
@@ -71,13 +71,18 @@ test('the background puts the ticket, checklist, decisions and scope first, and 
   assert.doesNotMatch(hugeHead, /## Ticket/, 'the ticket text goes first');
 });
 
-test('the rule file carries the repository rules for every path and always includes the tests', () => {
+test('the rule file carries the repository rules for every path and leaves test files to ocr', () => {
   const withRules = JSON.parse(buildRuleFile('  Use the service layer.  '));
   assert.deepEqual(withRules, {
     rules: [{ path: '**/*', rule: 'Use the service layer.', merge_system_rule: true }],
-    include: [...RULE_INCLUDE],
   });
-  assert.deepEqual(JSON.parse(buildRuleFile('')), { include: [...RULE_INCLUDE] });
+  assert.ok(!('include' in withRules));
+  assert.deepEqual(JSON.parse(buildRuleFile('')), {});
+});
+
+test('the ocr token budget defaults to 400k', async () => {
+  const { config } = await import('./config.js');
+  assert.equal(config.OCR_TOKEN_BUDGET, 400_000);
 });
 
 // --- the ocr provider ------------------------------------------------------------

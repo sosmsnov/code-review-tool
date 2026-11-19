@@ -59,15 +59,13 @@ function clip(text: string, cap: number): string {
   return text.length <= cap ? text : `${text.slice(0, cap - TRIMMED.length).trimEnd()}${TRIMMED}`;
 }
 
-/** ocr skips test files unless told otherwise; this tool reviews them. */
-export const RULE_INCLUDE = ['**/tests/**', '**/__tests__/**', '**/*.test.*', '**/test_*.py'] as const;
-
-/** The provider's `--rule` file: the repository rules for every path, and the test files included. */
+/**
+ * The provider's `--rule` file: the repository rules for every path. Test
+ * files are left to ocr's own defaults (it skips them): the primary review
+ * reads them already.
+ */
 export function buildRuleFile(rulesText: string): string {
   const text = rulesText.trim();
-  const body = {
-    ...(text ? { rules: [{ path: '**/*', rule: text, merge_system_rule: true }] } : {}),
-    include: [...RULE_INCLUDE],
-  };
+  const body = text ? { rules: [{ path: '**/*', rule: text, merge_system_rule: true }] } : {};
   return `${JSON.stringify(body, null, 2)}\n`;
 }

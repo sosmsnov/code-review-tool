@@ -69,6 +69,55 @@ export interface Review {
   ticket_label?: TicketLabel | null;
   /** The second opinion; null when none was requested. Lists carry the summary only (no comments). */
   second_opinion?: SecondOpinion | null;
+  /** What the run spent; detail endpoint only, null while it runs and on older rows. */
+  usage?: RunUsage | null;
+  /** The weighted total; list endpoints only. */
+  usage_weighted?: number | null;
+}
+
+export interface UsageNumbers {
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+}
+
+export interface UsageTotals extends UsageNumbers {
+  cost_usd: number | null;
+  weighted: number;
+  processes: number;
+}
+
+export interface UsagePass {
+  name: string;
+  usage: (UsageNumbers & { cost_usd: number | null; model: string | null }) | null;
+  weighted: number;
+  processes?: number;
+}
+
+export interface RunUsage {
+  passes: UsagePass[];
+  totals: UsageTotals;
+}
+
+/** `GET /api/usage`. */
+export interface UsageWindow {
+  window_hours: number;
+  budget: number;
+  used: number;
+  remaining: number | null;
+  reviews: number;
+  coverage_passes: number;
+  since: string;
+}
+
+/** A branch of a ticket batch that was not queued because its head did not change. */
+export interface SkippedTarget {
+  repo: string;
+  branch: string;
+  head_sha: string;
+  review_id: number;
+  reason: string;
 }
 
 export type SecondOpinionStatus = 'pending' | 'skipped' | 'running' | 'done' | 'failed';
@@ -720,6 +769,8 @@ export interface TicketGroupPayload {
   latest_coverage: { id: number; status: string; error: string | null; created_at: string } | null;
   coverage_pending: boolean;
   run: TicketRun | null;
+  /** The latest finished review of each branch plus the coverage pass. */
+  usage?: { totals: UsageTotals; reviews: number; coverage_id: number | null };
 }
 
 /** A coverage requirement seen from one branch. */

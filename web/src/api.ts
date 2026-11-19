@@ -14,6 +14,8 @@ import type {
   ReviewGroupsPayload,
   ReviewersPayload,
   ResolvedTarget,
+  SkippedTarget,
+  UsageWindow,
   TicketChecklist,
   TicketGroupPayload,
   TicketInfo,
@@ -68,8 +70,12 @@ export const api = {
     includeWorkingTree?: boolean;
     baseBranch?: string;
     secondOpinion?: string;
+    ignoreBudget?: boolean;
+    reviewUnchanged?: boolean;
   }) =>
-    req<{ reviews: Review[] }>('/api/reviews', { method: 'POST', body: JSON.stringify(body) }),
+    req<{ reviews: Review[]; skipped?: SkippedTarget[] }>('/api/reviews', { method: 'POST', body: JSON.stringify(body) }),
+  /** Weighted tokens spent in the usage window, against the budget. */
+  usage: () => req<UsageWindow>('/api/usage'),
   listReviews: (params: Params = {}) =>
     req<{ reviews: Review[]; total: number }>(withQuery('/api/reviews', params)),
   /** The history grouped by ticket: `q`, `status` (active | failed | done), `limit`, `offset`. */
@@ -93,7 +99,7 @@ export const api = {
   /** A ticket group: chains in stack order, latest runs, coverage. 404 when the key has none. */
   ticketGroup: (key: string) => req<TicketGroupPayload>(`/api/ticket-groups/${encodeURIComponent(key)}`),
   reviewTicket: (key: string, body: { reviewer?: string; model?: string; requirementsText?: string; branches?: string[] } = {}) =>
-    req<TicketGroupPayload & { reviews: Review[]; notes: string[]; resolve_warning?: string }>(
+    req<TicketGroupPayload & { reviews: Review[]; skipped?: SkippedTarget[]; notes: string[]; resolve_warning?: string }>(
       `/api/tickets/${encodeURIComponent(key)}/review`,
       { method: 'POST', body: JSON.stringify(body) },
     ),

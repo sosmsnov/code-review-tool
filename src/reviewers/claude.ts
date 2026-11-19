@@ -9,7 +9,7 @@ import {
   buildBaseChildEnv, dedupeModels, describeAuthFailure, isBinOnPath, MODEL_LIST_TIMEOUT_MS, runCli,
   type CliRunner,
 } from './shared.js';
-import type { ModelDiscovery, ModelInfo, ReviewerDefinition } from './types.js';
+import type { ModelDiscovery, ModelInfo, PassLimits, ReviewerDefinition } from './types.js';
 
 // --- the Anthropic Models API ---------------------------------------------
 
@@ -297,9 +297,10 @@ export const claudeReviewer: ReviewerDefinition = {
   acceptsUnlistedModels: true,
   bin: config.claudeBin,
   buildChildEnv: () => buildBaseChildEnv(),
-  buildArgs(prompt: string, model: string, dir: string): string[] {
+  buildArgs(prompt: string, model: string, dir: string, limits?: PassLimits): string[] {
     return [
       '-p', prompt,
+      ...(limits?.maxTurns ? ['--max-turns', String(limits.maxTurns)] : []),
       '--model', model,
       '--output-format', 'stream-json',
       '--verbose',

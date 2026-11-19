@@ -1,4 +1,5 @@
 import type { OnLog } from '../types.js';
+import { usageFromCodexTurn } from '../usage.js';
 import type { StreamLineResult } from './types.js';
 import { MAX_LOG_CHARS, logProse, truncate } from './anthropicStream.js';
 
@@ -24,8 +25,11 @@ export function parseCodexStreamLine(line: string, onLog: OnLog): StreamLineResu
       onLog('info', 'Reviewer started');
       return {};
     case 'turn.started':
-    case 'turn.completed':
       return {};
+    case 'turn.completed': {
+      const usage = usageFromCodexTurn(e);
+      return usage ? { usage } : {};
+    }
     case 'item.started':
     case 'item.updated':
     case 'item.completed':

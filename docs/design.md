@@ -889,7 +889,7 @@ branch); `wouldCycle()`; `linearParents()` for a hand-made order; and
 - `setParentByHand()` and `setChainOrder()` refuse loops and unknown branches.
 - `ticketGroupView()` is what the ticket page and `get_ticket` show.
 - `skipUnchanged()` (`skipUnchanged.ts`) runs in the ticket paths (a ticket
-  review, and `POST /api/reviews` with several targets of a ticket) once the
+  review, and `POST /api/reviews` with a ticket input, however many targets) once the
   bases are applied: a target whose head (the local branch tip, or
   `git ls-remote` in the sandbox) equals `head_sha` of its branch's latest
   `done` review in the group, with the same base branch, is not queued but

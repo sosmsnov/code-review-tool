@@ -167,6 +167,9 @@ function reportAbsPath(row: ReviewRow): string | null {
 export interface ReviewRouteOptions {
   /** How a ticket batch reads each branch's head; for tests. */
   headOf?: HeadLookup;
+  /** Input resolution and queueing; for tests. */
+  resolve?: typeof resolveTargets;
+  startRun?: typeof startRun;
 }
 
 export async function reviewRoutes(app: FastifyInstance, opts: ReviewRouteOptions = {}): Promise<void> {
@@ -196,7 +199,7 @@ export async function reviewRoutes(app: FastifyInstance, opts: ReviewRouteOption
     let fromTicket = false;
     let chosen: ResolvedTarget[];
     try {
-      const resolved = await resolveTargets(input, { requirementsText, includeWorkingTree, baseBranch });
+      const resolved = await (opts.resolve ?? resolveTargets)(input, { requirementsText, includeWorkingTree, baseBranch });
       ticket = resolved.ticket;
       fromTicket = resolved.fromTicket;
       chosen = targets && targets.length > 0
@@ -227,7 +230,7 @@ export async function reviewRoutes(app: FastifyInstance, opts: ReviewRouteOption
       req.log?.warn?.(`ticket group: ${(err as Error).message}`);
     }
 
-    // A ticket input leaves out the branches whose latest finished reviews already saw their heads.
+    // A ticket input (even one branch) leaves out the branches whose latest finished review saw the same head and base.
     let skipped: SkippedTarget[] = [];
     if (fromTicket && !parsed.data.reviewUnchanged) {
       ({ run: chosen, skipped } = await skipUnchanged(chosen, (t) => ticketGroupOf(t, ticket), opts.headOf));
@@ -239,7 +242,7 @@ export async function reviewRoutes(app: FastifyInstance, opts: ReviewRouteOption
       const byGroup = new Map<string, number[]>();
       for (const step of orderBatch(chosen, (t) => ticketGroupOf(t, ticket))) {
         const dependsOn = step.parentIndex !== null ? reviews[step.parentIndex]!.id : null;
-        const review = startRun(step.target, ticket, reviewer, model, { dependsOn, secondOpinion });
+        const review = (opts.startRun ?? startRun)(step.target, ticket, reviewer, model, { dependsOn, secondOpinion });
         reviews.push(review);
         const key = ticketGroupOf(step.target, ticket);
         if (key) byGroup.set(key, [...(byGroup.get(key) ?? []), review.id]);

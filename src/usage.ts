@@ -93,8 +93,10 @@ function num(value: unknown): number {
 
 /**
  * The `usage` of an Anthropic-style `result` event (Claude Code, Cursor
- * Agent, Grok CLI); null when the event has none. The model is the event's
- * own, else the `modelUsage` entry that cost the most.
+ * Agent, Grok CLI); null when the event has none. The `modelUsage` map, when
+ * present, is summed (it covers every model of the run, and is what adds up to
+ * `total_cost_usd`); else the top-level `usage`. The model is the event's own,
+ * else the `modelUsage` entry that cost the most.
  */
 export function usageFromResultEvent(e: Record<string, any>): PassUsage | null {
   const u = e.usage;
@@ -105,11 +107,22 @@ export function usageFromResultEvent(e: Record<string, any>): PassUsage | null {
     entries.sort((x, y) => num(y[1]?.costUSD) - num(x[1]?.costUSD));
     model = entries[0]?.[0] ?? null;
   }
+  const perModel = typeof e.modelUsage === 'object' && e.modelUsage !== null ? Object.values(e.modelUsage as Record<string, any>) : [];
+  const tokens = perModel.length > 0
+    ? {
+        input: perModel.reduce((n, m) => n + num(m?.inputTokens), 0),
+        cache_read: perModel.reduce((n, m) => n + num(m?.cacheReadInputTokens), 0),
+        cache_write: perModel.reduce((n, m) => n + num(m?.cacheCreationInputTokens), 0),
+        output: perModel.reduce((n, m) => n + num(m?.outputTokens), 0),
+      }
+    : {
+        input: num(u.input_tokens),
+        cache_read: num(u.cache_read_input_tokens),
+        cache_write: num(u.cache_creation_input_tokens),
+        output: num(u.output_tokens),
+      };
   return {
-    input: num(u.input_tokens),
-    cache_read: num(u.cache_read_input_tokens),
-    cache_write: num(u.cache_creation_input_tokens),
-    output: num(u.output_tokens),
+    ...tokens,
     cost_usd: typeof e.total_cost_usd === 'number' && Number.isFinite(e.total_cost_usd) ? e.total_cost_usd : null,
     model,
   };

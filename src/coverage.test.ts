@@ -348,3 +348,16 @@ test('already_on_base: verified sites at the chain root base count as satisfied;
   assert.equal(fetched.length, 3);
   assert.ok(fetched.every((d) => !fs.existsSync(d)));
 });
+
+test('coverage: the usage the pass spent is stored on the row', async () => {
+  const spent = { input: 10, cache_read: 1_000, cache_write: 0, output: 20, cost_usd: 0.02, model: 'fake' };
+  const metered: ReviewerDefinition = { ...reviewer(answer), parseStreamLine: (line) => ({ result: line, usage: spent }) };
+  const row = await coverage.runCoverage(KEY, { reviewerDefinition: metered, timeoutMs: 20_000, trigger: 'test' });
+  assert.equal(row.status, 'done', row.error ?? '');
+  assert.ok(row.usage, 'ticket_coverage.usage is set');
+  const stored = JSON.parse(row.usage!);
+  assert.equal(stored.totals.cache_read, 1_000);
+  assert.equal(stored.totals.output, 20);
+  assert.equal(stored.totals.weighted, 10 + 100 + 100);
+  assert.ok(stored.totals.processes >= 1);
+});

@@ -50,6 +50,10 @@ the requirements inferred from the change.
   paste it, e.g. "Linear ticket ABC-123"): the ticket, the tracker that
   answered, and every branch it found are shown with checkboxes, and **Start
   review** starts one run per picked branch. Any other input starts right away.
+  **Review unchanged branches** also reviews ticket branches that were already
+  reviewed at the same head and base (otherwise they are skipped and named
+  under the form). When the usage budget is spent the start is refused and
+  **Start anyway** sends it again with `ignoreBudget`.
 - **History** — **By ticket** (default, 20 groups a page) shows one compact row
   per group: the key (linking to the ticket page, with ↗ to the tracker), the
   title, `N branches · M runs`, one outcome badge, and the last activity. The
@@ -235,8 +239,11 @@ them as a **ticket group**: per repository, a chain of branches, each with the
   /api/tickets/<key>/review`, or the MCP tool `start_ticket_review` resolves
   the ticket again, re-detects the parents, and queues every branch of every
   chain parents first, each diffed against its parent, as ordinary single-branch
-  runs. A child whose parent is in the same batch waits in the queue until the
-  parent's review has ended (done, failed, or cancelled: a parent that did not
+  runs. Branches unchanged since their latest finished review (same head and
+  base) are skipped and listed under `skipped`; `reviewUnchanged: true` reviews
+  them all. A spent usage budget refuses the call with 409 unless
+  `ignoreBudget`. A child whose parent is in the same batch waits in the queue
+  until the parent's review has ended (done, failed, or cancelled: a parent that did not
   finish releases it, with a note in its log); `POST /api/reviews` with several
   branches of one ticket orders and chains them the same way and records a
   ticket run. A branch whose parent is outside the batch and has no finished

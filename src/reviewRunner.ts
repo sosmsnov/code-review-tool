@@ -923,11 +923,15 @@ export async function spawnReviewer(
     }
   };
   let exit: TrackedExit;
+  let spawned = false;
   try {
     exit = await spawnTracked({
       bin: reviewer.bin,
       // Built lazily: a cancelled or refused pass never builds its argv.
-      args: () => reviewer.buildArgs(prompt, model, dir, opts.maxTurns ? { maxTurns: opts.maxTurns } : undefined),
+      args: () => {
+        spawned = true;
+        return reviewer.buildArgs(prompt, model, dir, opts.maxTurns ? { maxTurns: opts.maxTurns } : undefined);
+      },
       cwd: dir,
       env: () => reviewer.buildChildEnv(),
       timeoutMs,
@@ -936,8 +940,8 @@ export async function spawnReviewer(
       onStdoutLine: onLine,
     });
   } finally {
-    // A process that failed or was killed still spent what it reported.
-    if (opts.usage && opts.pass) {
+    // A process that failed or was killed still spent what it reported; one that never started is no process.
+    if (spawned && opts.usage && opts.pass) {
       const spent = usage as PassUsage | null;
       opts.usage.record(opts.pass, spent ? { ...spent, model: spent.model ?? (model || null) } : null);
     }

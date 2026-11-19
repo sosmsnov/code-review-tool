@@ -13,7 +13,7 @@ import { cursorReviewer } from './reviewers/cursor.js';
 import { grokReviewer } from './reviewers/grok.js';
 import type { PassLimits, ReviewerDefinition } from './reviewers/types.js';
 import { config } from './config.js';
-import { liveReviewerGroups, runReview, type RunnableReview } from './reviewRunner.js';
+import { liveReviewerGroups, runReview, spawnReviewer, type RunnableReview } from './reviewRunner.js';
 import { secondOpinionUsage } from './secondOpinion/run.js';
 import { renderUsage } from './reportWriter.js';
 import type { CheckoutResult } from './types.js';
@@ -30,11 +30,29 @@ test('the usage of a captured Claude Code result event is read, with the cost an
   const line = fs.readFileSync(path.join(FIXTURES, 'claude-result-max-turns.json'), 'utf8').trim();
   const out = parseAnthropicStreamLine(line, noLog);
   assert.deepEqual(out.usage, {
-    input: 10, cache_read: 22_845, cache_write: 12_117, output: 174, cost_usd: 0.0283675, model: 'claude-haiku-4-5-20251001',
+    input: 919, cache_read: 22_845, cache_write: 12_117, output: 186, cost_usd: 0.0283675, model: 'claude-haiku-4-5-20251001',
   });
   // That run stopped at its --max-turns cap.
   assert.equal(out.turnCapReached, true);
   assert.equal(out.isError, true);
+});
+
+test('modelUsage is summed over the models when present; the top-level usage is the fallback', () => {
+  const event = {
+    type: 'result', subtype: 'success', result: '{}', total_cost_usd: 0.5,
+    usage: { input_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3, output_tokens: 4 },
+    modelUsage: {
+      small: { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 30, cacheCreationInputTokens: 40, costUSD: 0.1 },
+      large: { inputTokens: 100, outputTokens: 200, cacheReadInputTokens: 300, cacheCreationInputTokens: 400, costUSD: 0.4 },
+    },
+  };
+  assert.deepEqual(parseAnthropicStreamLine(JSON.stringify(event), noLog).usage, {
+    input: 110, cache_read: 330, cache_write: 440, output: 220, cost_usd: 0.5, model: 'large',
+  });
+  const { modelUsage: _drop, ...bare } = event;
+  assert.deepEqual(parseAnthropicStreamLine(JSON.stringify(bare), noLog).usage, {
+    input: 1, cache_read: 2, cache_write: 3, output: 4, cost_usd: 0.5, model: null,
+  });
 });
 
 test('a result event without usage gives no usage; a successful one is no turn cap', () => {
@@ -216,4 +234,19 @@ test('lenses run with the lens cap and synthesis with the synthesis cap; usage i
   assert.equal(out.usage.totals.weighted, 6 * (100 + 50));
   assert.equal(out.usage.passes.find((p) => p.name === 'synthesis')!.usage!.cost_usd, 0.01);
   assert.deepEqual(meter.summary(), out.usage);
+});
+
+test('a pass whose process never started is not recorded; a started one is, even when it fails', async () => {
+  const { reviewer } = fakeReviewer('none');
+  const meter = new UsageMeter(DEFAULT_USAGE_WEIGHTS);
+  const base = { reviewer, model: 'fake', dir: root, timeoutMs: 5_000, usage: meter, pass: 'lens:never' };
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(spawnReviewer('p', { ...base, signal: aborted.signal }, noLog), /cancelled/);
+  assert.equal(meter.empty, true);
+
+  const failing: ReviewerDefinition = { ...reviewer, buildArgs: () => ['-c', 'exit 3'] };
+  await assert.rejects(spawnReviewer('p', { ...base, reviewer: failing, pass: 'lens:ran', signal: undefined }, noLog));
+  assert.equal(meter.summary().passes.find((p) => p.name === 'lens:ran')?.processes, 1);
+  assert.equal(meter.summary().passes.some((p) => p.name === 'lens:never'), false);
 });

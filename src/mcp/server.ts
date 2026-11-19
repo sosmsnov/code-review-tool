@@ -101,7 +101,7 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
     'Start even when the usage budget of the window (USAGE_BUDGET_WEIGHTED) is spent. Default false.',
   );
   const reviewUnchangedSchema = z.boolean().optional().describe(
-    'Several branches of a ticket: also review a branch whose head its latest finished review already saw. Default false.',
+    'Ticket input: also review a branch whose head and base its latest finished review already saw; otherwise such branches are skipped and listed under skipped. Default false.',
   );
 
   server.registerTool('list_reviewers', {
@@ -171,8 +171,9 @@ export function createMcpServer({ api, env = process.env }: CreateServerOptions)
       '"local:my-service" = the checked-out branch\n' +
       'Links may also use http://, www., or <...> around them. ' +
       'When a ticket resolves to several branches, all of them are reviewed unless "targets" narrows it; a branch ' +
-      'whose head equals the head of its latest finished review in the ticket group (same base) is skipped unless ' +
-      'reviewUnchanged=true (a single branch is never skipped). When the usage budget of the window is spent the ' +
+      'whose head and base equal those of its latest finished review in the ticket group is skipped (listed under ' +
+      '"skipped") unless reviewUnchanged=true, however many branches there are; a plain repo#branch, local: or PR ' +
+      'input is never skipped. When the usage budget of the window is spent the ' +
       'call is refused (409) unless ignoreBudget=true. ' +
       'Returns {reviews:[{id, repo, branch, base, reviewer, model, status, url}], skipped:[{repo, branch, head_sha, ' +
       'review_id, reason}]}.',

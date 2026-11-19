@@ -155,13 +155,13 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // SECOND_OPINION applies here as on the server; an uninstalled default is left out, with the run log's warning.
-  let secondOpinion = resolveSecondOpinion(undefined);
+  // SECOND_OPINION applies here as on the server: an uninstalled default is still stored, and the
+  // runner skips the stage with a warning in the run log. Said here too, before minutes of waiting.
+  const secondOpinion = resolveSecondOpinion(undefined);
   if (secondOpinion) {
     const provider = getSecondOpinionProvider(secondOpinion);
     if (!provider.isAvailable()) {
-      console.warn(`second opinion ${secondOpinion}: skipped (${secondOpinionNotInstalled(provider)})`);
-      secondOpinion = null;
+      console.warn(`second opinion ${secondOpinion}: will be skipped (${secondOpinionNotInstalled(provider)})`);
     }
   }
 

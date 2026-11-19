@@ -616,8 +616,8 @@ without a second opinion stores the marker `{"provider":"none"}`, which parses
 as no stage everywhere (runner, page, report, MCP); a re-run keeps the previous
 run's choice, `none` included, and only a row older than the stage (NULL) gets
 `SECOND_OPINION`. Ticket batches pass the choice to every branch; the CLI uses
-`SECOND_OPINION`, stores the marker when that resolves to none, and leaves out
-an uninstalled default with a warning. Every route that returns a review row
+`SECOND_OPINION` like the server (an uninstalled default is stored, and the
+runner skips it) and stores the marker when that resolves to none. Every route that returns a review row
 serves `second_opinion` parsed, the list only its summary.
 
 ## Database (`src/db.ts`, better-sqlite3, `data/review.db`)

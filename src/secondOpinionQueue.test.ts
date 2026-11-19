@@ -1,6 +1,6 @@
 import './testEnv.js';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,19 @@ process.env.DATA_DIR = path.join(root, 'data');
 process.env.SECOND_OPINION = 'ocr';
 // No sandbox: a review that starts fails at once, which is the failure path under test.
 process.env.DOCKER_BIN = '/bin/false';
+// A local clone, so POST /api/reviews resolves an input without the sandbox.
+const clone = path.join(root, 'clone');
+fs.mkdirSync(clone, { recursive: true });
+for (const args of [['init', '-q', '-b', 'main'], ['commit', '-q', '--allow-empty', '-m', 'base'], ['checkout', '-q', '-b', 'feat/local']]) {
+  execFileSync('git', args, {
+    cwd: clone,
+    env: {
+      ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.invalid', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    },
+  });
+}
+Object.assign(process.env, { ALLOWED_REPOS: 'test-repo', LOCAL_REPOS: `test-repo=${clone}`, LOCAL_REPOS_DIR: '' });
 
 const store = await import('./db.js');
 const { enqueueReview, recoverInterrupted, stopAllReviews } = await import('./queue.js');
@@ -26,7 +39,7 @@ const { isPidAlive } = await import('./processOwnership.js');
 const { reviewRoutes } = await import('./routes/reviews.js');
 const { setReviewerForTests } = await import('./reviewers/index.js');
 const { createOcrProvider } = await import('./secondOpinion/ocr.js');
-const { setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
+const { resolveSecondOpinion, setSecondOpinionProviderForTests } = await import('./secondOpinion/index.js');
 const { NO_SECOND_OPINION, parseSecondOpinionState, pendingState } = await import('./secondOpinion/state.js');
 
 function stubReviewer(name: ReviewerName): ReviewerDefinition {
@@ -115,6 +128,27 @@ test('shutdown closes the second opinion of a queued review with the reason', as
   const state = stateOf(child)!;
   assert.equal(state.status, 'skipped');
   assert.equal(state.error, 'interrupted by shutdown');
+});
+
+test('an uninstalled env default is accepted and stored; the runner skips it, the request is not refused', async () => {
+  setSecondOpinionProviderForTests('ocr', { ...createOcrProvider('/nonexistent/ocr'), isAvailable: () => false });
+  // The queue is stopped by the test above, so the new row is recorded but never processed.
+  const app = Fastify();
+  await app.register(reviewRoutes);
+  try {
+    assert.equal(resolveSecondOpinion(undefined), 'ocr');
+    const res = await app.inject({ method: 'POST', url: '/api/reviews', payload: { input: 'local:test-repo#feat/local', baseBranch: 'main', model: 'fake' } });
+    assert.equal(res.statusCode, 201, res.body);
+    const [created] = res.json().reviews as { id: number; second_opinion: { provider: string; status: string } | null }[];
+    assert.equal(created!.second_opinion!.provider, 'ocr');
+    assert.equal(created!.second_opinion!.status, 'pending');
+    assert.equal(stateOf(created!.id)!.provider, 'ocr');
+    const explicit = await app.inject({ method: 'POST', url: '/api/reviews', payload: { input: 'local:test-repo#feat/local', baseBranch: 'main', model: 'fake', secondOpinion: 'ocr' } });
+    assert.equal(explicit.statusCode, 400);
+  } finally {
+    await app.close();
+    setSecondOpinionProviderForTests('ocr', { ...createOcrProvider('/nonexistent/ocr'), isAvailable: () => true });
+  }
 });
 
 test('a re-run keeps the previous provider, takes none when asked, and the default when none is stored', async () => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from '../api';
+import { buildStartBody, isBudgetRefusal } from '../startRequest';
 import History from '../components/History';
 import { ModelsRefresh } from '../components/ModelsRefresh';
 import { Button, Card, CloseButton, Field, Input, Segmented, Select, Toolbar } from '../components/ui';
@@ -30,6 +31,9 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [usageWindow, setUsageWindow] = useState<UsageWindow | null>(null);
   const [skippedNote, setSkippedNote] = useState<string | null>(null);
+  const [reviewUnchanged, setReviewUnchanged] = useState(false);
+  // Set when the last start was refused for the spent budget; holds what to resend.
+  const [budgetRetry, setBudgetRetry] = useState<{ chosen?: ResolvedTarget[] } | null>(null);
   const [ticket, setTicket] = useState<TicketInfo | null>(null);
   const [targets, setTargets] = useState<ResolvedTarget[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
@@ -285,7 +289,7 @@ export default function Home() {
     }
   };
 
-  const run = async (chosen?: ResolvedTarget[]): Promise<void> => {
+  const run = async (chosen?: ResolvedTarget[], ignoreBudget = false): Promise<void> => {
     // Started from a resolved link: send the canonical `tracker:KEY` the server answered with.
     const resolvedKey =
       chosen && ticket?.key && link && link.tracker !== 'github' && ticket.provider === link.tracker
@@ -294,19 +298,24 @@ export default function Home() {
     const value = mode === 'local' ? localInput() : resolvedKey ?? input.trim();
     if (!value) return;
     setError(null);
+    setBudgetRetry(null);
     setSkippedNote(null);
     setBusy(true);
     try {
-      const { reviews, skipped = [] } = await api.createReviews({
-        input: value,
-        ...(chosen ? { targets: chosen } : {}),
-        ...(manualText ? { requirementsText: manualText } : {}),
-        reviewer,
-        ...(model.trim() ? { model: model.trim() } : {}),
-        ...(mode === 'local' && includeWorkingTree ? { includeWorkingTree: true } : {}),
-        ...(mode === 'local' && localBase.trim() ? { baseBranch: localBase.trim() } : {}),
-        ...(secondOpinionProviders.length ? { secondOpinion } : {}),
-      });
+      const { reviews, skipped = [] } = await api.createReviews(
+        buildStartBody({
+          input: value,
+          targets: chosen,
+          requirementsText: manualText || undefined,
+          reviewer,
+          model,
+          includeWorkingTree: mode === 'local' && includeWorkingTree,
+          baseBranch: mode === 'local' ? localBase : '',
+          secondOpinion: secondOpinionProviders.length ? secondOpinion : null,
+          reviewUnchanged,
+          ignoreBudget,
+        }),
+      );
       if (skipped.length) {
         setSkippedNote(`Skipped, unchanged since their last review: ${skipped.map((s) => `${s.repo}#${s.branch}`).join(', ')}.`);
       }
@@ -315,6 +324,7 @@ export default function Home() {
       else setHistoryToken((n) => n + 1);
     } catch (err) {
       setError((err as Error).message);
+      if (isBudgetRefusal(err)) setBudgetRetry({ chosen });
     } finally {
       setBusy(false);
       refreshUsage();
@@ -504,6 +514,10 @@ export default function Home() {
             </Select>
           </Field>
         )}
+        <label className="local-check" title="Also review branches whose head and base their latest finished review already saw">
+          <input type="checkbox" checked={reviewUnchanged} onChange={(e) => setReviewUnchanged(e.target.checked)} />
+          Review unchanged branches
+        </label>
       </Toolbar>
       {modelNotice && <p className="muted manual-hint">{modelNotice}</p>}
       {!modelNotice && modelSource && <p className="muted manual-hint">{modelSource}</p>}
@@ -541,7 +555,19 @@ export default function Home() {
 
       {usageWindow && <p className="muted manual-hint">Usage: {usageWindowLine(usageWindow)}</p>}
       {skippedNote && <p className="notice-line">{skippedNote}</p>}
-      {error && <p className="error-line">{error}</p>}
+      {error && (
+        <p className="error-line">
+          {error}
+          {budgetRetry && (
+            <>
+              {' '}
+              <Button variant="ghost" disabled={busy} onClick={() => void run(budgetRetry.chosen, true)}>
+                Start anyway
+              </Button>
+            </>
+          )}
+        </p>
+      )}
 
       {ticket && (
         <Card

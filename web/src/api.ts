@@ -31,6 +31,14 @@ function withQuery(path: string, params: Params): string {
   return q ? `${path}?${q}` : path;
 }
 
+/** A failed API call; `status` is the HTTP status. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -44,7 +52,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       /* keep raw text */
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
   return (text ? JSON.parse(text) : {}) as T;
 }

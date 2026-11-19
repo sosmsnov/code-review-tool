@@ -60,7 +60,7 @@ const deps: Partial<TicketRouteDeps> = {
   resolve: async (input: string) => {
     if (resolveFails) throw new Error('tracker down');
     if (input !== 'ABC-3') throw new Error(`Unsupported input: ${input}`);
-    return { ticket, targets: resolved };
+    return { ticket, targets: resolved, fromTicket: true };
   },
   detect: {
     compare: async (repo, base, head) => gitCompare(repos[repo as 'svc' | 'web'], base, head),

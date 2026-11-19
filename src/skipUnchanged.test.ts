@@ -52,7 +52,7 @@ const heads = new Map<string, string>([[A, 'a'.repeat(40)], [B, 'b'.repeat(40)]]
 
 const app = Fastify({ logger: false });
 const deps: Partial<TicketRouteDeps> = {
-  resolve: async () => ({ ticket, targets: resolved }),
+  resolve: async () => ({ ticket, targets: resolved, fromTicket: true }),
   detect: {
     compare: async (_repo, base, head) => gitCompare(repoDir, base, head),
     defaultBranch: async () => 'main',
